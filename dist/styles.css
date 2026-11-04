@@ -40,3 +40,6 @@ body:has(.drive-panel:not([hidden])) .app-shell{height:var(--visible-height,100d
 #settingsButton svg{display:block;width:22px;height:22px;transform:none}
 @media(max-width:600px){.topbar,body:has(.drive-panel:not([hidden])) .topbar{height:56px;min-height:56px;padding:6px 0}.brand{font-size:22px}.top-actions .icon-button{width:44px;height:44px}}
 @media(max-height:500px) and (orientation:landscape){body:has(.drive-panel:not([hidden])) .topbar{height:48px;min-height:48px;padding:2px 0}}
+.driving-reminder{flex:none;margin:4px 0 0;color:#a8b9aa;font-size:10px;font-weight:700;line-height:1.2;white-space:nowrap;text-align:center}:root[data-theme="light"] .driving-reminder{color:#49634c}
+.safety-gate{max-height:var(--visible-height,100dvh);overflow-y:auto;align-items:center}.safety-card{max-height:calc(var(--visible-height,100dvh) - 32px);overflow-y:auto;overscroll-behavior:contain}.safety-card p{font-size:clamp(12px,2.6vw,15px);line-height:1.45;margin-bottom:20px}.safety-card h2{font-size:clamp(42px,11vw,68px);margin:14px 0}.safety-card .primary-button{min-height:44px}
+@media(max-width:600px){.driving-reminder{font-size:9px;margin-top:3px}.safety-gate{padding:12px}.safety-card{padding:20px;max-height:calc(var(--visible-height,100dvh) - 24px)}}
