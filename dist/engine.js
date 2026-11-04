@@ -81,14 +81,14 @@ function timestampMs(value) {
 function limitAt(road, at) {
   const zones = road.speedLimits || [];
   const zone = zones.find(z => at >= (z.fromM ?? z.startM ?? 0) && at < (z.toM ?? z.endM ?? Infinity));
-  const value = zone?.limitKmh ?? zone?.speedKmh ?? road.limitKmh ?? road.speedLimitKmh ?? road.speedLimit;
+  const value = zone ? (zone.limitKmh ?? zone.speedKmh) : (road.limitKmh ?? road.speedLimitKmh ?? road.speedLimit);
   return Number.isFinite(value) && value > 0 && value <= 90 ? value : 50;
 }
 
 function limitAssumedAt(road, at) {
   const zones = road.speedLimits || [];
   const zone = zones.find(z => at >= (z.fromM ?? z.startM ?? 0) && at < (z.toM ?? z.endM ?? Infinity));
-  const value = zone?.limitKmh ?? zone?.speedKmh ?? road.limitKmh ?? road.speedLimitKmh ?? road.speedLimit;
+  const value = zone ? (zone.limitKmh ?? zone.speedKmh) : (road.limitKmh ?? road.speedLimitKmh ?? road.speedLimit);
   return !(Number.isFinite(value) && value > 0 && value <= 90);
 }
 
@@ -120,6 +120,18 @@ function referenceTime(road, fromM, toM) {
   return seconds;
 }
 
+function cappedForecastTime(road, fromM, toM, speedMps) {
+  if (toM <= fromM) return 0;
+  const breaks = [fromM, toM];
+  for (const zone of road.speedLimits || []) {
+    for (const edge of [zone.fromM ?? zone.startM, zone.toM ?? zone.endM])
+      if (Number.isFinite(edge) && edge > fromM && edge < toM) breaks.push(edge);
+  }
+  breaks.sort((a, b) => a - b);
+  return breaks.slice(1).reduce((sum, edge, i) => sum +
+    (edge - breaks[i]) / Math.min(speedMps, limitAt(road, (breaks[i] + edge) / 2) / 3.6), 0);
+}
+
 function isTunnel(road, at) {
   return road.tunnel === true || (road.tunnels || []).some(z => at >= (z.fromM ?? z.startM ?? 0) && at <= (z.toM ?? z.endM ?? 0));
 }
@@ -134,15 +146,49 @@ function empty(status, reason = null) {
     limitKmh: null, limitAssumed: false, limitSource: null, deltaSeconds: null, elapsedSeconds: null, exits: [],
     alongM: null, matchedDistanceM: null, inTunnel: false,
     entryTime: null, entrySource: null, entryConfidence: null, entryUncertaintyMs: null,
-    timingBasis: null, elapsedClockSeconds: null, candidateRoad: null };
+    timingBasis: null, elapsedClockSeconds: null, candidateRoad: null,
+    limitUncertain: false, cumulativeReferenceAssumed: false, reconstructionStatus: 'none' };
 }
 
 export class Tracker {
   constructor(data, options = {}) {
     this.roads = (Array.isArray(data) ? data : data?.roads || []).filter(r => vertices(r).length >= 2);
+    const connectorRaw = Array.isArray(data?.connectors) ? data.connectors : [];
+    const connectorById = new Map(connectorRaw.map(r => [r.id, r]));
+    for (const road of [...this.roads]) for (const link of road.routeNextRoadIds || []) {
+      if (typeof link === 'string') continue;
+      for (const id of link.connectorIds || []) {
+        const source = connectorById.get(id);
+        if (source && !this.roads.some(r => r.id === id)) this.roads.push({ ...source,
+          ref: source.ref || road.ref, name: source.name || road.name,
+          direction: source.direction || road.direction,
+          travelDirection: source.travelDirection || road.travelDirection,
+          connector: true });
+      }
+    }
     this.byId = new Map(this.roads.map(r => [r.id, r]));
+    this.edges = new Map();
+    const addEdge = (a, b) => {
+      if (!this.byId.has(b)) return;
+      if (!this.edges.has(a)) this.edges.set(a, new Set());
+      this.edges.get(a).add(b);
+    };
+    for (const road of this.roads) {
+      for (const id of road.nextRoadIds || []) addEdge(road.id, id);
+      for (const link of road.routeNextRoadIds || []) {
+        if (typeof link === 'string') { addEdge(road.id, link); continue; }
+        const route = [...(link.connectorIds || []), link.roadId].filter(Boolean);
+        let from = road.id;
+        for (const id of route) { addEdge(from, id); from = id; }
+      }
+    }
+    this.predecessors = new Map();
+    for (const [from, targets] of this.edges) for (const to of targets) {
+      if (!this.predecessors.has(to)) this.predecessors.set(to, new Set());
+      this.predecessors.get(to).add(from);
+    }
     const local = options.localRoads || data?.localRoads || [];
-    this.localRoads = (Array.isArray(local) ? local : local.roads || []).filter(r => vertices(r).length >= 2);
+    this.localRoads = (Array.isArray(local) ? local : local.roads || []).filter(r => vertices(r).length >= 2 && !this.byId.has(r.id));
     this.grid = new Map();
     for (const road of [...this.roads, ...this.localRoads]) {
       const points = vertices(road);
@@ -180,6 +226,8 @@ export class Tracker {
     this.reacquiring = false;
     this.gapAnchor = null;
     this.fullSessionAvailable = true;
+    this.cumulativeReferenceAssumed = false;
+    this.reconstructionStatus = 'none';
     this.state = empty('searching');
     return this.state;
   }
@@ -191,6 +239,7 @@ export class Tracker {
     this.previous = null;
     this.deltaValid = false;
     this.reacquiring = true;
+    this.reconstructionStatus = 'pending';
     this.pending = null;
     this.sessionStartMs = null;
     return this.state = { ...empty('stale', reason), road: preserveContext ? this.state.road : null,
@@ -199,45 +248,45 @@ export class Tracker {
       elapsedSeconds: this.entryTime == null ? null : Math.max(0, (Date.now() - this.entryTime) / 1000),
       elapsedClockSeconds: this.entryTime == null ? null : Math.max(0, (Date.now() - this.entryTime) / 1000),
       timingBasis: this.entryTime == null ? null : 'since detection',
-      fullSessionAvailable: false };
+      fullSessionAvailable: false, cumulativeReferenceAssumed: this.cumulativeReferenceAssumed,
+      reconstructionStatus: this.reconstructionStatus };
   }
 
   connected(from, to) {
     return !!this.forwardPath(from, to);
   }
 
+  successors(road) {
+    return [...(this.edges.get(road?.id) || [])].map(id => this.byId.get(id)).filter(Boolean);
+  }
+
   forwardPath(from, to) {
-    if (!from || !to || from.ref !== to.ref) return null;
-    const path = [from], seen = new Set([from.id]);
-    let length = 0;
-    while (path.length <= 100 && length <= 500) {
-      const next = (path.at(-1).nextRoadIds || []).map(id => this.byId.get(id))
-        .find(r => r && !seen.has(r.id) && r.ref === from.ref);
-      if (!next) return null;
-      path.push(next);
-      if (next.id === to.id) return path;
-      seen.add(next.id);
-      length += next.lengthM || roadLengthM(next);
-    }
-    return null;
+    return this.uniquePath(from, to, 500);
   }
 
   gapPath(from, to) {
-    if (!from || !to || from.ref !== to.ref) return null;
+    return this.uniquePath(from, to, 50000);
+  }
+
+  uniquePath(from, to, maxM) {
+    if (!from || !to) return null;
     if (from.id === to.id) return [from];
-    const path = [from], visited = new Set([from.id]);
-    let length = 0;
-    while (length <= 50000 && path.length < this.roads.length) {
-      const choices = (path.at(-1).nextRoadIds || []).map(id => this.byId.get(id))
-        .filter(r => r && r.ref === from.ref && !visited.has(r.id));
-      if (choices.length !== 1) return null;
-      const next = choices[0];
-      path.push(next);
-      if (next.id === to.id) return path;
-      visited.add(next.id);
-      length += next.lengthM || roadLengthM(next);
+    const stack = [{ road: from, path: [from], seen: new Set([from.id]), length: 0 }];
+    let result = null, expansions = 0;
+    while (stack.length && expansions++ < 20000) {
+      const item = stack.pop();
+      for (const next of this.successors(item.road)) {
+        if (item.seen.has(next.id)) continue;
+        const length = item.length + (next.id === to.id ? 0 : next.lengthM || roadLengthM(next));
+        if (length > maxM) continue;
+        const path = [...item.path, next];
+        if (next.id === to.id) {
+          if (result) return null;
+          result = path;
+        } else stack.push({ road: next, path, seen: new Set([...item.seen, next.id]), length });
+      }
     }
-    return null;
+    return expansions >= 20000 ? null : result;
   }
 
   gapReference(path, fromM, toM) {
@@ -249,6 +298,30 @@ export class Tracker {
       seconds += part;
     }
     return seconds;
+  }
+
+  pathAssumed(path, fromM, toM) {
+    return path.some((road, i) => referenceAssumedOn(road, i ? 0 : fromM,
+      i === path.length - 1 ? toM : road.lengthM || roadLengthM(road)));
+  }
+
+  limitUncertain(road, at, accuracy) {
+    const length = road.lengthM || roadLengthM(road);
+    const before = at - accuracy, after = at + accuracy;
+    const edges = [];
+    for (const zone of road.speedLimits || [])
+      for (const edge of [zone.fromM ?? zone.startM, zone.toM ?? zone.endM])
+        if (Number.isFinite(edge) && edge > before && edge < after) edges.push(edge);
+    if (edges.some(edge => limitAt(road, Math.max(0, edge - 0.01)) !==
+      limitAt(road, Math.min(length, edge + 0.01)))) return true;
+    if (limitAt(road, Math.max(0, before)) !== limitAt(road, Math.min(length, after))) return true;
+    if (before < 0) for (const id of this.predecessors.get(road.id) || []) {
+      const previous = this.byId.get(id);
+      if (limitAt(previous, Math.max(0, (previous.lengthM || roadLengthM(previous)) - 0.01)) !== limitAt(road, 0)) return true;
+    }
+    if (after > length) for (const next of this.successors(road))
+      if (limitAt(next, 0) !== limitAt(road, Math.max(0, length - 0.01))) return true;
+    return false;
   }
 
   upcomingExits(road, alongM) {
@@ -269,8 +342,7 @@ export class Tracker {
       result.sort((a, b) => a.distanceM - b.distanceM);
       if (result.length >= 3) break;
       base += current.lengthM || roadLengthM(current);
-      const choices = (current.nextRoadIds || []).map(id => this.byId.get(id))
-        .filter(next => this.connected(current, next));
+      const choices = this.successors(current);
       current = choices[0] || null;
     }
     return result.slice(0, 3);
@@ -326,6 +398,7 @@ export class Tracker {
       this.deltaValid = false;
       this.sessionStartMs = null;
       this.reacquiring = true;
+      this.reconstructionStatus = 'pending';
     }
     this.lastTime = time;
     this.history.push({ time, point: [latitude, longitude], accuracy, heading: fix.heading, speed: fix.speed });
@@ -387,21 +460,25 @@ export class Tracker {
       if (path && reference != null && travel >= 0 && travel <= dt * 55 + accuracy * 3) {
         this.elapsedSeconds += dt;
         this.referenceSeconds += reference;
+        this.cumulativeReferenceAssumed ||= this.pathAssumed(path, anchor.fix.alongM, selected.match.alongM);
         this.previous = { time, alongM: selected.match.alongM, point };
         this.currentRoad = selected.road;
         this.deltaValid = true;
         this.reacquiring = false;
         this.gapAnchor = null;
         this.fullSessionAvailable = true;
+        this.reconstructionStatus = 'reconstructed';
         this.sessionStartMs = this.entryTime;
       } else {
         this.gapAnchor = null;
         this.fullSessionAvailable = false;
+        this.reconstructionStatus = 'unresolved';
       }
     }
     if (this.gapAnchor && !selectedExpressway) {
       this.gapAnchor = null;
       this.fullSessionAvailable = false;
+      this.reconstructionStatus = 'unresolved';
     }
     const currentExpressway = this.currentRoad && this.byId.has(this.currentRoad.id);
     const continuous = this.sameLogicalRoad(this.currentRoad, selected.road);
@@ -437,6 +514,8 @@ export class Tracker {
       this.elapsedSeconds = 0;
       this.referenceSeconds = 0;
       this.deltaValid = !!this.previous;
+      this.cumulativeReferenceAssumed = false;
+      this.reconstructionStatus = 'none';
       if (selectedExpressway) {
         if (!(currentExpressway && !this.fullSessionAvailable && this.entryTime != null)) {
           this.entryTime = this.pending.firstTime;
@@ -452,6 +531,7 @@ export class Tracker {
       this.referenceSeconds = 0;
       this.deltaValid = false;
       this.sessionStartMs = time;
+      this.cumulativeReferenceAssumed = false;
       this.reacquiring = true;
     }
     this.pending = null;
@@ -486,6 +566,7 @@ export class Tracker {
       this.referenceSeconds = 0;
       this.deltaValid = false;
       this.sessionStartMs = time;
+      this.cumulativeReferenceAssumed = false;
     }
     const limitKmh = limitAt(road, match.alongM);
     const priorLimit = this.previous && (sameRoad || connected) ? limitAt(oldRoad, this.previous.alongM) : null;
@@ -498,6 +579,7 @@ export class Tracker {
     else if (!this.previous || (!sameRoad && !connected) || implausible) {
       this.deltaValid = !this.reacquiring;
       this.sessionStartMs ??= time;
+      this.cumulativeReferenceAssumed ||= limitAssumedAt(road, match.alongM);
     }
     else if (!this.deltaValid) {
       const reference = this.referenceAcross(oldRoad, this.previous.alongM, road, match.alongM);
@@ -505,6 +587,8 @@ export class Tracker {
         this.deltaValid = true;
         this.elapsedSeconds = dt;
         this.referenceSeconds = reference;
+        this.cumulativeReferenceAssumed ||= this.pathAssumed(sameRoad ? [road] : path,
+          this.previous.alongM, match.alongM);
       }
     }
     else if (this.deltaValid) {
@@ -513,6 +597,8 @@ export class Tracker {
       else {
       this.elapsedSeconds += dt;
       this.referenceSeconds += reference;
+      this.cumulativeReferenceAssumed ||= this.pathAssumed(sameRoad ? [road] : path,
+        this.previous.alongM, match.alongM);
       }
     }
     this.currentRoad = road;
@@ -524,27 +610,14 @@ export class Tracker {
       accuracy > 20 || match.distanceM > 18 || !headingUseful ? 'medium' : 'high';
     const deltaSeconds = this.deltaValid && limitKmh ? this.elapsedSeconds - this.referenceSeconds : null;
     const exits = this.upcomingExits(road, match.alongM).map(({ exit: e, distanceM: distance, road: exitRoad, atM }) => {
-        let reference = referenceTime(road, match.alongM, road.lengthM || roadLengthM(road));
-        let referenceAssumed = referenceAssumedOn(road, match.alongM, road.lengthM || roadLengthM(road));
-        if (exitRoad.id === road.id) {
-          reference = referenceTime(road, match.alongM, atM);
-          referenceAssumed = referenceAssumedOn(road, match.alongM, atM);
-        }
-        else {
-          let cursor = road;
-          const visited = new Set();
-          while (reference != null && cursor.id !== exitRoad.id && !visited.has(cursor.id)) {
-            visited.add(cursor.id);
-            const next = (cursor.nextRoadIds || []).map(id => this.byId.get(id)).find(r => this.connected(cursor, r));
-            if (!next) { reference = null; break; }
-            cursor = next;
-            referenceAssumed ||= referenceAssumedOn(cursor, 0, cursor.id === exitRoad.id ? atM : cursor.lengthM || roadLengthM(cursor));
-            const part = referenceTime(cursor, 0, cursor.id === exitRoad.id ? atM : cursor.lengthM || roadLengthM(cursor));
-            reference = part == null ? null : reference + part;
-          }
-        }
-        const projectedDeltaSeconds = deltaSeconds != null && speedMps > 1 && reference != null ?
-          deltaSeconds + distance / speedMps - reference : null;
+        const path = road.id === exitRoad.id ? [road] : this.gapPath(road, exitRoad);
+        const reference = path ? this.gapReference(path, match.alongM, atM) : null;
+        const referenceAssumed = path ? this.pathAssumed(path, match.alongM, atM) : null;
+        const capped = path && speedMps > 1 ? path.reduce((sum, part, i) => sum +
+          cappedForecastTime(part, i ? 0 : match.alongM,
+            i === path.length - 1 ? atM : part.lengthM || roadLengthM(part), speedMps), 0) : null;
+        const projectedDeltaSeconds = deltaSeconds != null && capped != null && reference != null ?
+          deltaSeconds + capped - reference : null;
         return { name: e.name || e.label || 'Unnamed exit', number: e.number ?? null,
           distanceM: distance, projectedDeltaSeconds, forecast: true, referenceAssumed };
       });
@@ -553,7 +626,10 @@ export class Tracker {
       confidence, road: { id: road.id, ref: road.ref || null, name: road.name || road.ref || '',
         direction: road.travelDirection || road.direction || '', kind: 'expressway', isExpressway: true },
       speedKmh, limitKmh, limitAssumed: limitAssumedAt(road, match.alongM),
-      limitSource: limitAssumedAt(road, match.alongM) ? 'Assumed 50 km/h reference' : 'OSM maxspeed tag', deltaSeconds,
+      limitSource: limitAssumedAt(road, match.alongM) ? 'Assumed 50 km/h reference' : 'OSM maxspeed tag',
+      limitUncertain: this.limitUncertain(road, match.alongM, accuracy),
+      cumulativeReferenceAssumed: this.cumulativeReferenceAssumed,
+      reconstructionStatus: this.reconstructionStatus, deltaSeconds,
       elapsedSeconds: this.elapsedSeconds, exits, alongM: match.alongM,
       matchedDistanceM: match.distanceM, inTunnel,
       entryTime: this.entryTime, entrySource: this.entrySource,

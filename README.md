@@ -18,14 +18,14 @@ For a personal Cloudflare account, `npx wrangler deploy` uses `wrangler.jsonc`. 
 
 ## Product behaviour
 
-- Identify mapped public motor roads and ramps using a spatial index, heading and recent fixes. Display GPS speed everywhere; require two consistent fixes before confirming a road.
+- Identify mapped public motor roads and ramps using a spatial index, heading and recent fixes. Display GPS speed everywhere; hold a new road candidate for six seconds before changing a confirmed route.
 - Enable delta and upcoming exits only on confirmed mainlines of the ten expressways. Suppress timing at ambiguous local-road/expressway overlaps.
 - Light, Dark and System themes follow a saved device preference. The separately labelled Screen awake control manages wake lock.
 - Follow the current mainline, show up to three mapped exits ahead, update as exits pass.
 - Compare actual elapsed time with reference travel time over matched distance. Negative delta means ahead/faster; positive means behind/slower. A positive delta is not permission to exceed the posted speed limit.
-- Starting midway means tracking since detection, not reconstructed entrance history. Road changes and uncertain fixes can restart the reference session.
-- Missing speed limits produce no delta; missing exits produce no invented destinations.
-- Forecasts assume continuation at the displayed speed; actual future traffic and driving may differ.
+- Starting midway anchors the clock at the earliest reliable detected mainline fix, not a physical entrance crossing. During a GPS gap, live speed and pace disappear while the entry clock and last confirmed road remain. A unique directed mapped path can restore estimated full-session timing; ambiguous routes keep the entry clock but withhold a full-session pace comparison.
+- Missing or implausible speed tags use a visibly marked assumed 50 km/h reference. The current limit and cumulative use of assumed reference segments are shown separately. Missing exits produce no invented destinations.
+- Forecasts cap projected travel speed at each mapped or assumed future segment limit; actual future traffic and driving may differ.
 - GPS gaps, tunnels, parallel roads and flyovers can prevent dependable tracking. This is advisory software, not a calibrated speedometer or enforcement-compliance assessment.
 
 ## Data and enforcement
@@ -45,7 +45,7 @@ Replay tests validate calculations and data wiring. They do not replace passenge
 
 ## Validation completed
 
-Eleven engine tests and six integration tests pass. The integration replay covers twenty long directed paths with over 15,000 replay fixes, checking timing continuity and duplicate-free exit rows. Chromium checks also covered Light/Dark/System preference changes and persistence, local-road name and speed with delta disabled, responsive layouts down to 320px, offline reload of the compressed all-road bundle, and live BKE identification with injected device positions, all ten demo selectors, mobile/desktop layouts, offline reload, location-error clearing, recovery and the stale-fix watchdog. The v1-to-v2 service-worker upgrade was also checked, with no automatic page reload during a drive. These tests use simulated positions, not road measurements.
+Engine and integration replay tests cover directed route continuity, local-road transitions, GPS gaps, tunnel reconstruction and ambiguous paths. Chromium checks cover theme persistence, compact live and demo layouts, three visible exits on small screens, and offline assets. These tests use simulated positions, not road measurements.
 
 ## Updating an installed copy
 

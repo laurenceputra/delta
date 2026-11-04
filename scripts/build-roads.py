@@ -102,6 +102,48 @@ def main():
         road['nextRoadIds'] = [x for x in starts.get((road['ref'], way['nodes'][-1]), []) if x != road['id']]
         road['exits'].sort(key=lambda x: (x['offsetM'], x['id']))
 
+    # Only exact directed OSM node joins form route transitions. Motorway links
+    # are bounded connector paths, never ordinary streets or proximity guesses.
+    all_starts = defaultdict(list)
+    for road, way in zip(roads, mainline):
+        all_starts[way['nodes'][0]].append(road)
+    links = [w for w in ways if w['tags'].get('highway') == 'motorway_link' and len(w.get('geometry', [])) > 1]
+    link_starts = defaultdict(list)
+    connectors = []
+    for link in links:
+        t = link['tags']
+        coords = [[round(p['lon'], 7), round(p['lat'], 7)] for p in link['geometry']]
+        length = round(sum(distance_m(a, b) for a, b in zip(coords, coords[1:])), 1)
+        connector = {'id': f"osm-way-{link['id']}", 'name': t.get('name'),
+                     'highway': 'motorway_link', 'coordinates': coords,
+                     'speedLimit': speed_kmh(t.get('maxspeed')), 'lengthM': length,
+                     'destination': t.get('destination'), 'ref': t.get('destination:ref'),
+                     'source': 'OSM motorway_link way',
+                     'startNode': link['nodes'][0], 'endNode': link['nodes'][-1]}
+        connectors.append(connector)
+        link_starts[connector['startNode']].append(connector)
+    for road, way in zip(roads, mainline):
+        transitions = [{'roadId': target['id'], 'connectorIds': [], 'lengthM': 0}
+                       for target in all_starts.get(way['nodes'][-1], []) if target['id'] != road['id']]
+        frontier = [(c, [c]) for c in link_starts.get(way['nodes'][-1], [])]
+        while frontier:
+            current, path = frontier.pop()
+            length = sum(c['lengthM'] for c in path)
+            if length > 2000 or len(path) > 4:
+                continue
+            for target in all_starts.get(current['endNode'], []):
+                if target['id'] != road['id'] and target['ref'] != road['ref']:
+                    transitions.append({'roadId': target['id'],
+                                        'connectorIds': [c['id'] for c in path], 'lengthM': round(length, 1)})
+            if len(path) < 4:
+                for nxt in link_starts.get(current['endNode'], []):
+                    if nxt['id'] not in {c['id'] for c in path}:
+                        frontier.append((nxt, path + [nxt]))
+        road['routeNextRoadIds'] = transitions
+    for connector in connectors:
+        connector.pop('startNode')
+        connector.pop('endNode')
+
     by_id = {r['id']: r for r in roads}
     predecessors = {next_id for r in roads for next_id in r['nextRoadIds']}
     chains = []
@@ -148,6 +190,7 @@ def main():
         },
         'coverage': {ref: {'segments': counts[ref], 'speedTaggedSegments': known_speeds[ref], 'mappedExitAttachments': exit_counts[ref]} for ref in REFS},
         'chains': chains,
+        'connectors': connectors,
         'roads': roads,
     }
     path = Path('dist/data/roads.json')

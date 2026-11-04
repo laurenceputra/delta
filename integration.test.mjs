@@ -273,3 +273,118 @@ test('brief ramp candidate does not replace confirmed mainline or accrue time', 
   assert.equal(returned.deltaSeconds, null);
   assert.equal(returned.timingBasis, 'since reacquisition');
 });
+
+test('one fix interval crossing multiple limit zones uses each zone distance', () => {
+  const road = { id: 'multi-limit', ref: 'MCE', name: 'MCE', direction: 'Eastbound',
+    coordinates: [[103.9, 1.35], [103.9027, 1.35]], speedLimit: 90, exits: [] };
+  const length = roadLengthM(road);
+  road.speedLimits = [
+    { fromM: 0, toM: length * .3, limitKmh: 90 },
+    { fromM: length * .3, toM: length * .6, limitKmh: 70 },
+    { fromM: length * .6, toM: length, limitKmh: 80 }
+  ];
+  const tracker = new Tracker({ roads: [road] });
+  const base = 1_800_000_000_000;
+  const fix = (fraction, ms) => ({ ...sampleAt(road, length * fraction),
+    accuracy: 5, speed: 24, timestamp: base + ms });
+  tracker.update(fix(.1, 0));
+  const after = tracker.update(fix(.9, 10000));
+  const reference = length * (.2 / (90 / 3.6) + .3 / (70 / 3.6) + .3 / (80 / 3.6));
+  assert.equal(after.status, 'tracking');
+  assert.ok(Math.abs(after.deltaSeconds - (10 - reference)) < .05,
+    `expected ${10 - reference}s, got ${after.deltaSeconds}s`);
+});
+
+test('bundled MCE to KPE connection keeps entry and delta without switch hold', () => {
+  const mce = byId.get('osm-way-253945383');
+  const kpe = byId.get('osm-way-633601611');
+  assert.equal(mce.ref, 'MCE');
+  assert.equal(kpe.ref, 'KPE');
+  assert.ok(mce.routeNextRoadIds.some(link => link.roadId === kpe.id));
+  const tracker = new Tracker({ roads: [mce, kpe], connectors: bundle.connectors });
+  const base = 1_800_000_000_000;
+  const fix = (road, metres, ms) => ({ ...sampleAt(road, metres),
+    accuracy: 5, speed: 25, timestamp: base + ms });
+  tracker.update(fix(mce, 500, 0));
+  const before = tracker.update(fix(mce, 700, 8000));
+  const after = tracker.update(fix(kpe, 50, 12000));
+  assert.equal(before.status, 'tracking');
+  assert.equal(after.status, 'tracking');
+  assert.equal(after.road.id, kpe.id);
+  assert.equal(after.entryTime, before.entryTime);
+  assert.ok(after.elapsedSeconds > before.elapsedSeconds);
+  assert.ok(Number.isFinite(after.deltaSeconds));
+  assert.equal(after.timingBasis, 'since detection');
+});
+
+test('bundled MCE to KPE GPS gap reconstructs only its directed connection', () => {
+  const mce = byId.get('osm-way-253945383');
+  const kpe = byId.get('osm-way-633601611');
+  const tracker = new Tracker({ roads: [mce, kpe], connectors: bundle.connectors });
+  const base = 1_800_000_000_000;
+  const fix = (road, metres, ms) => ({ ...sampleAt(road, metres),
+    accuracy: 5, speed: 25, timestamp: base + ms });
+  tracker.update(fix(mce, 500, 0));
+  const before = tracker.update(fix(mce, 700, 8000));
+  const gap = tracker.invalidate('Tunnel GPS unavailable');
+  assert.equal(gap.deltaSeconds, null);
+  const after = tracker.update(fix(kpe, 150, 180000));
+  assert.equal(after.status, 'tracking');
+  assert.equal(after.road.id, kpe.id);
+  assert.equal(after.entryTime, before.entryTime);
+  assert.equal(after.elapsedClockSeconds, 180);
+  assert.equal(after.timingBasis, 'since detection');
+  assert.ok(Number.isFinite(after.deltaSeconds));
+});
+
+test('exit forecast never assumes travel faster than each future limit', () => {
+  const road = { id: 'forecast-caps', ref: 'KPE', name: 'KPE',
+    coordinates: [[103.9, 1.35], [103.9027, 1.35]], speedLimit: 90,
+    exits: [{ id: 'exit-a', name: 'Exit A', offsetM: 250 }],
+    speedLimits: [{ fromM: 100, toM: 300, limitKmh: 70 }] };
+  const tracker = new Tracker({ roads: [road] });
+  const base = 1_800_000_000_000;
+  const fix = (metres, ms) => ({ ...sampleAt(road, metres),
+    accuracy: 5, speed: 120 / 3.6, timestamp: base + ms });
+  tracker.update(fix(10, 0));
+  const state = tracker.update(fix(20, 1000));
+  assert.equal(state.exits.length, 1);
+  assert.ok(Number.isFinite(state.exits[0].projectedDeltaSeconds));
+  assert.ok(state.exits[0].projectedDeltaSeconds >= state.deltaSeconds - .05,
+    `forecast ${state.exits[0].projectedDeltaSeconds}s undercuts current ${state.deltaSeconds}s`);
+});
+
+test('historical assumed reference remains flagged after returning to a known limit', () => {
+  const road = { id: 'assumed-history', ref: 'MCE', name: 'MCE',
+    coordinates: [[103.9, 1.35], [103.9027, 1.35]], speedLimit: null };
+  const length = roadLengthM(road);
+  road.speedLimits = [
+    { fromM: 0, toM: length * .3, limitKmh: 90 },
+    { fromM: length * .3, toM: length * .6, limitKmh: null },
+    { fromM: length * .6, toM: length, limitKmh: 80 }
+  ];
+  const tracker = new Tracker({ roads: [road] });
+  const base = 1_800_000_000_000;
+  const fix = (fraction, ms) => ({ ...sampleAt(road, length * fraction),
+    accuracy: 5, speed: 25, timestamp: base + ms });
+  tracker.update(fix(.1, 0));
+  const state = tracker.update(fix(.9, 10000));
+  assert.equal(state.limitKmh, 80);
+  assert.equal(state.limitAssumed, false);
+  assert.equal(state.cumulativeReferenceAssumed, true);
+  assert.ok(Number.isFinite(state.deltaSeconds));
+});
+
+test('GPS accuracy spanning a lower speed limit marks current limit uncertain', () => {
+  const road = { id: 'boundary', ref: 'KPE', name: 'KPE',
+    coordinates: [[103.9, 1.35], [103.9027, 1.35]], speedLimit: 90 };
+  const length = roadLengthM(road);
+  road.speedLimits = [{ fromM: length * .5, toM: length, limitKmh: 70 }];
+  const tracker = new Tracker({ roads: [road] });
+  const base = 1_800_000_000_000;
+  tracker.update({ ...sampleAt(road, length * .46), accuracy: 5, speed: 20, timestamp: base });
+  const state = tracker.update({ ...sampleAt(road, length * .505), accuracy: 5,
+    speed: 20, timestamp: base + 1000 });
+  assert.equal(state.limitKmh, 70);
+  assert.equal(state.limitUncertain, true);
+});

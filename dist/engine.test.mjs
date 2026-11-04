@@ -244,12 +244,65 @@ test('long tunnel gap reconstructs unique same-chain route and original session'
 
 test('branching tunnel path refuses full-session reconstruction', () => {
   const a = { ...road, id: 'a', nextRoadIds: ['b', 'c'], exits: [] };
-  const b = { ...road, id: 'b', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: [] };
-  const c = { ...road, id: 'c', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: [] };
-  const tracker = new Tracker({ roads: [a, b, c] });
+  const b = { ...road, id: 'b', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: ['d'] };
+  const c = { ...road, id: 'c', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: ['d'] };
+  const d = { ...road, id: 'd', coordinates: [[103.92, 1.35], [103.93, 1.35]], nextRoadIds: [] };
+  const tracker = new Tracker({ roads: [a, b, c, d] });
   start(tracker, a);
   tracker.invalidate('Tunnel signal lost');
-  const state = tracker.update(at(b, 100, 60000));
+  const state = tracker.update(at(d, 100, 60000));
   assert.equal(state.deltaSeconds, null);
   assert.notEqual(state.timingBasis, 'since detection');
+});
+
+test('piecewise limits and assumed history survive a mapped limit change', () => {
+  const zoned = { ...road, speedLimit: 90, speedLimits: [
+    { fromM: 300, toM: 500, limitKmh: 70 },
+    { fromM: 500, toM: 700, limitKmh: null },
+    { fromM: 700, toM: 1100, limitKmh: 80 }
+  ] };
+  const tracker = new Tracker({ roads: [zoned] });
+  start(tracker, zoned, 200);
+  const crossing = tracker.update(at(zoned, 600, 21000, 20));
+  assert.equal(crossing.limitKmh, 50);
+  assert.equal(crossing.cumulativeReferenceAssumed, true);
+  const mapped = tracker.update(at(zoned, 800, 31000, 20));
+  assert.equal(mapped.limitKmh, 80);
+  assert.equal(mapped.cumulativeReferenceAssumed, true);
+  assert.ok(Number.isFinite(mapped.deltaSeconds));
+  const nearBoundary = tracker.update(at(zoned, 900, 36000, 20));
+  assert.equal(nearBoundary.limitUncertain, false);
+});
+
+test('verified cross-reference connector continues timing without switch hold', () => {
+  const mce = { ...road, id: 'mce', ref: 'MCE', nextRoadIds: [],
+    routeNextRoadIds: [{ roadId: 'kpe', connectorIds: ['link'], lengthM: 100 }] };
+  const connector = { id: 'link', coordinates: [[103.91, 1.35], [103.911, 1.35]], speedLimit: 70, lengthM: 111 };
+  const kpe = { ...road, id: 'kpe', ref: 'KPE', coordinates: [[103.911, 1.35], [103.921, 1.35]],
+    speedLimit: 80, nextRoadIds: [] };
+  const tracker = new Tracker({ roads: [mce, kpe], connectors: [connector] });
+  start(tracker, mce, 900);
+  const after = tracker.update(at(kpe, 100, 16000));
+  assert.equal(after.status, 'tracking');
+  assert.equal(after.road.ref, 'KPE');
+  assert.ok(after.elapsedSeconds > 1);
+});
+
+test('forecast caps each interval at future mapped speed limit', () => {
+  const zoned = { ...road, speedLimit: 90,
+    speedLimits: [{ fromM: 200, toM: 1100, limitKmh: 50 }] };
+  const tracker = new Tracker({ roads: [zoned] });
+  const state = start(tracker, zoned, 100);
+  const exit = state.exits[0];
+  assert.ok(exit.projectedDeltaSeconds >= state.deltaSeconds - 0.01);
+});
+
+test('uncertainty detects a short lower-limit zone inside GPS radius', () => {
+  const zoned = { ...road, speedLimit: 90,
+    speedLimits: [{ fromM: 295, toM: 305, limitKmh: 70 }] };
+  const tracker = new Tracker({ roads: [zoned] });
+  tracker.update({ ...at(zoned, 280, 0), accuracy: 25 });
+  const state = tracker.update({ ...at(zoned, 280, 1000), accuracy: 25 });
+  assert.equal(state.limitKmh, 90);
+  assert.equal(state.limitUncertain, true);
 });
