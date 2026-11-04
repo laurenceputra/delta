@@ -461,3 +461,22 @@ test('no fix, poor accuracy, overlap, and reset cannot fabricate provisional ent
   assert.equal(reset.entryTime, null);
   assert.equal(reset.provisional, false);
 });
+
+test('provisional CTE gap across a fork cannot invent full-session pace', () => {
+  const road = (id, coordinates, nextRoadIds) => ({ id, ref: 'CTE', name: 'CTE',
+    direction: 'Eastbound', tunnel: true, speedLimit: 90, nextRoadIds, coordinates });
+  const a = road('provisional-a', [[103.9, 1.35], [103.91, 1.35]], ['provisional-b', 'provisional-c']);
+  const b = road('provisional-b', [[103.91, 1.35], [103.92, 1.35]], ['provisional-d']);
+  const c = road('provisional-c', [[103.91, 1.35], [103.915, 1.351], [103.92, 1.35]], ['provisional-d']);
+  const d = road('provisional-d', [[103.92, 1.35], [103.93, 1.35]], []);
+  const tracker = new Tracker({ roads: [a, b, c, d] });
+  const base = 1_800_000_000_000;
+  const fix = (segment, metres, ms) => ({ ...sampleAt(segment, metres),
+    accuracy: 5, speed: 25, timestamp: base + ms });
+  assert.equal(tracker.update(fix(a, 50, 0)).provisional, true);
+  const gap = tracker.invalidate('Tunnel GPS unavailable');
+  assert.equal(gap.entryTime, base);
+  const returned = tracker.update(fix(d, 500, 100000));
+  assert.equal(returned.deltaSeconds, null);
+  assert.notEqual(returned.reconstructionStatus, 'reconstructed');
+});
