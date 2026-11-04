@@ -5,6 +5,7 @@ Usage: python scripts/build-roads.py /path/to/osm.json
 The input used for the checked-in bundle is documented in roads.json metadata.
 """
 import json
+import gzip
 import math
 import re
 import sys
@@ -34,6 +35,17 @@ def speed_kmh(value):
         return None
     m = re.fullmatch(r'\s*(\d+)\s*(?:km/h|kph)?\s*', value)
     return int(m.group(1)) if m else None
+
+
+def simplify(coords, tolerance_m=5):
+    if len(coords) <= 2:
+        return coords
+    result = [coords[0]]
+    for point in coords[1:-1]:
+        if distance_m(result[-1], point) >= tolerance_m:
+            result.append(point)
+    result.append(coords[-1])
+    return result
 
 
 def main():
@@ -140,8 +152,33 @@ def main():
     path = Path('dist/data/roads.json')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, separators=(',', ':')))
+    # Keep the mainline bundle stable; nearby road identification uses this separate file.
+    local_classes = {'motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link',
+                     'secondary', 'secondary_link', 'tertiary', 'tertiary_link',
+                     'residential', 'unclassified', 'living_street', 'service'}
+    mainline_ids = {w['id'] for w in mainline}
+    local = []
+    for w in ways:
+        t = w['tags']
+        if w['id'] in mainline_ids or t.get('highway') not in local_classes or len(w.get('geometry', [])) < 2:
+            continue
+        if t.get('motor_vehicle') in {'no', 'private'} or t.get('vehicle') == 'no' or t.get('access') in {'no', 'private'}:
+            continue
+        coords = simplify([[round(p['lon'], 5), round(p['lat'], 5)] for p in w['geometry']])
+        if t.get('oneway') == '-1':
+            coords.reverse()
+        oneway = t.get('oneway') in {'yes', '1', 'true', '-1'} or (t.get('oneway') != 'no' and (t.get('junction') == 'roundabout' or t.get('highway') in {'motorway', 'motorway_link'}))
+        local.append({'id': f"osm-way-{w['id']}", 'name': t.get('name'), 'ref': t.get('ref'),
+                      'highway': t['highway'], 'coordinates': coords,
+                      'speedLimit': speed_kmh(t.get('maxspeed')),
+                      'oneway': oneway, 'expressway': False,
+                      'destination': t.get('destination') or t.get('destination:street')})
+    local_path = Path('dist/data/local-roads.json')
+    local_path.write_text(json.dumps({'metadata': out['metadata'], 'roads': local}, separators=(',', ':')))
+    Path(str(local_path) + '.gz').write_bytes(gzip.compress(local_path.read_bytes(), compresslevel=9, mtime=0))
     print(json.dumps(out['coverage'], indent=2))
     print(f'{len(roads)} road segments, {path.stat().st_size:,} bytes')
+    print(f'{len(local)} local road segments, {local_path.stat().st_size:,} bytes')
 
 
 if __name__ == '__main__':

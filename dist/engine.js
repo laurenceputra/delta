@@ -121,6 +121,23 @@ export class Tracker {
   constructor(data, options = {}) {
     this.roads = (Array.isArray(data) ? data : data?.roads || []).filter(r => vertices(r).length >= 2);
     this.byId = new Map(this.roads.map(r => [r.id, r]));
+    const local = options.localRoads || data?.localRoads || [];
+    this.localRoads = (Array.isArray(local) ? local : local.roads || []).filter(r => vertices(r).length >= 2);
+    this.grid = new Map();
+    for (const road of [...this.roads, ...this.localRoads]) {
+      const points = vertices(road);
+      for (let i = 1; i < points.length; i++) {
+        const loLat = Math.floor(Math.min(points[i - 1][0], points[i][0]) / 0.002);
+        const hiLat = Math.floor(Math.max(points[i - 1][0], points[i][0]) / 0.002);
+        const loLon = Math.floor(Math.min(points[i - 1][1], points[i][1]) / 0.002);
+        const hiLon = Math.floor(Math.max(points[i - 1][1], points[i][1]) / 0.002);
+        for (let a = loLat; a <= hiLat; a++) for (let b = loLon; b <= hiLon; b++) {
+          const key = `${a}:${b}`;
+          if (!this.grid.has(key)) this.grid.set(key, new Set());
+          this.grid.get(key).add(road);
+        }
+      }
+    }
     this.options = { maxAccuracyM: 75, maxGapMs: 12000, maxMatchM: 85, ...options };
     this.reset();
   }
@@ -131,6 +148,8 @@ export class Tracker {
     this.elapsedSeconds = 0;
     this.referenceSeconds = 0;
     this.deltaValid = false;
+    this.pending = null;
+    this.confirmed = false;
     this.state = empty('searching');
     return this.state;
   }
@@ -199,6 +218,24 @@ export class Tracker {
     return seconds;
   }
 
+  nearby(point) {
+    const a = Math.floor(point[0] / 0.002), b = Math.floor(point[1] / 0.002);
+    const found = new Set();
+    for (let da = -1; da <= 1; da++) for (let db = -1; db <= 1; db++)
+      for (const road of this.grid.get(`${a + da}:${b + db}`) || []) found.add(road);
+    return found;
+  }
+
+  sameLogicalRoad(a, b) {
+    if (!a || !b) return false;
+    if (a.id === b.id) return true;
+    if (this.byId.has(a.id) && this.byId.has(b.id))
+      return !!this.forwardPath(a, b) || !!this.forwardPath(b, a);
+    return !this.byId.has(a.id) && !this.byId.has(b.id) &&
+      !!a.name && a.name === b.name && a.highway === b.highway &&
+      distanceM(vertices(a).at(-1), vertices(b)[0]) < 60;
+  }
+
   update(fix) {
     const time = timestampMs(fix?.timestamp);
     const latitude = fix?.latitude == null ? NaN : Number(fix.latitude);
@@ -220,27 +257,88 @@ export class Tracker {
     const heading = fix.heading == null ? NaN : Number(fix.heading);
     const speedMps = fix.speed == null ? NaN : Number(fix.speed);
     const headingUseful = Number.isFinite(heading) && (Number.isFinite(speedMps) ? speedMps > 2 : true);
+    const speedKmh = Number.isFinite(speedMps) && speedMps >= 0 ? speedMps * 3.6 : null;
     const point = [latitude, longitude];
-    const candidates = this.roads.map(road => ({ road, match: project(point, road) }))
+    const candidates = [...this.nearby(point)].map(road => ({ road, match: project(point, road) }))
       .filter(c => c.match && c.match.distanceM <= this.options.maxMatchM + accuracy * 0.35)
       .map(c => {
-        const turn = headingUseful ? angleDifference(heading, c.match.bearing) : 0;
+        const oneWay = c.road.oneway === true || c.road.oneway === 'yes' || c.road.oneway === '1' || c.road.oneway === '-1' || this.byId.has(c.road.id);
+        const turn = headingUseful ? Math.min(angleDifference(heading, c.match.bearing),
+          oneWay ? 360 : angleDifference(heading, c.match.bearing + 180)) : 0;
         const same = this.currentRoad && this.currentRoad.id === c.road.id;
         const next = this.connected(this.currentRoad, c.road);
         const progression = same && this.previous ? c.match.alongM - this.previous.alongM : 0;
-        const continuityPenalty = same && this.previous && progression < -35 ? 120 : 0;
+        const continuityPenalty = same && this.previous && progression < -35 && oneWay ? 120 : 0;
         return { ...c, score: c.match.distanceM + (headingUseful ? turn * 0.7 : 0) +
-          continuityPenalty - (same ? 18 : next ? 12 : 0), turn };
+          continuityPenalty - (same ? 5 : next ? 3 : 0), turn };
       }).sort((a, b) => a.score - b.score);
     const selected = candidates[0];
     if (!selected || (headingUseful && selected.turn > 105)) {
       this.previous = null;
       this.currentRoad = null;
       this.deltaValid = false;
-      return this.state = empty('searching', 'No reliable expressway direction match');
+      return this.state = { ...empty('identifying', 'No reliable road match'), speedKmh };
     }
 
+    const selectedMainline = this.byId.has(selected.road.id);
+    const ambiguous = candidates.find(c => this.byId.has(c.road.id) !== selectedMainline &&
+      Math.abs(c.match.distanceM - selected.match.distanceM) < Math.max(5, accuracy / 2) &&
+      c.turn < 65);
+    if (ambiguous) {
+      this.previous = null;
+      this.deltaValid = false;
+      this.elapsedSeconds = 0;
+      this.referenceSeconds = 0;
+      this.confirmed = false;
+      this.pending = null;
+      return this.state = { ...empty('identifying', 'Road level ambiguous'), speedKmh };
+    }
+
+    const selectedExpressway = this.byId.has(selected.road.id);
+    const currentExpressway = this.currentRoad && this.byId.has(this.currentRoad.id);
+    const continuous = this.sameLogicalRoad(this.currentRoad, selected.road);
+    const pendingSame = this.pending && this.sameLogicalRoad(this.pending.road, selected.road);
+    if (!this.confirmed || !continuous) {
+      this.pending = pendingSame ? { road: selected.road, count: this.pending.count + 1 } :
+        { road: selected.road, count: 1 };
+      if (this.pending.count < (this.options.confirmationFixes || 2)) {
+        this.deltaValid = false;
+        this.previous = null;
+        this.elapsedSeconds = 0;
+        this.referenceSeconds = 0;
+        return this.state = { ...empty(this.confirmed && currentExpressway ? 'exiting' :
+          this.confirmed && selectedExpressway ? 'entering' : 'identifying', 'Confirming road'),
+          speedKmh, road: { id: selected.road.id, ref: selected.road.ref || null,
+            name: selected.road.name || selected.road.ref || 'Unnamed road',
+            direction: selected.road.travelDirection || selected.road.destination || selected.road.direction || '',
+            kind: selectedExpressway ? 'expressway' : selected.road.highway === 'motorway_link' ? 'ramp' : 'local',
+            isExpressway: selectedExpressway } };
+      }
+      this.confirmed = true;
+      this.previous = null;
+      this.elapsedSeconds = 0;
+      this.referenceSeconds = 0;
+      this.deltaValid = false;
+    } else if (!this.previous) {
+      this.elapsedSeconds = 0;
+      this.referenceSeconds = 0;
+      this.deltaValid = false;
+    }
+    this.pending = null;
+
     const { road, match } = selected;
+    if (!selectedExpressway) {
+      this.currentRoad = road;
+      this.previous = { time, alongM: match.alongM, point };
+      this.elapsedSeconds = 0;
+      this.referenceSeconds = 0;
+      this.deltaValid = false;
+      return this.state = { ...empty('local'), road: { id: road.id, ref: road.ref || null,
+        name: road.name || road.ref || 'Unnamed road', direction: road.destination || '',
+        kind: road.highway === 'motorway_link' ? 'ramp' : 'local', isExpressway: false },
+        speedKmh, matchedDistanceM: match.distanceM, alongM: match.alongM,
+        confidence: accuracy > 30 || match.distanceM > 30 ? 'low' : 'medium' };
+    }
     const oldRoad = this.currentRoad;
     const sameRoad = oldRoad?.id === road.id;
     const path = oldRoad && !sameRoad ? this.forwardPath(oldRoad, road) : null;
@@ -279,7 +377,6 @@ export class Tracker {
     const inTunnel = isTunnel(road, match.alongM);
     const confidence = inTunnel || accuracy > 40 || match.distanceM > 35 ? 'low' :
       accuracy > 20 || match.distanceM > 18 || !headingUseful ? 'medium' : 'high';
-    const speedKmh = Number.isFinite(speedMps) && speedMps >= 0 ? speedMps * 3.6 : null;
     const deltaSeconds = this.deltaValid && limitKmh ? this.elapsedSeconds - this.referenceSeconds : null;
     const exits = this.upcomingExits(road, match.alongM).map(({ exit: e, distanceM: distance, road: exitRoad, atM }) => {
         let reference = referenceTime(road, match.alongM, road.lengthM || roadLengthM(road));
@@ -304,7 +401,7 @@ export class Tracker {
     return this.state = {
       status: 'tracking', reason: inTunnel ? 'Tunnel: GPS confidence reduced' : null,
       confidence, road: { id: road.id, ref: road.ref || null, name: road.name || road.ref || '',
-        direction: road.travelDirection || road.direction || '' }, speedKmh, limitKmh, deltaSeconds,
+        direction: road.travelDirection || road.direction || '', kind: 'expressway', isExpressway: true }, speedKmh, limitKmh, deltaSeconds,
       elapsedSeconds: this.elapsedSeconds, exits, alongM: match.alongM,
       matchedDistanceM: match.distanceM, inTunnel
     };

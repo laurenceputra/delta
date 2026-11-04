@@ -1,6 +1,6 @@
 # Delta SG
 
-A Cloudflare-hostable foreground PWA prototype for Singapore expressway speed and reference timing. No paid map APIs, navigation destination, Android Auto integration, or journey upload.
+A Cloudflare-hostable foreground PWA prototype for Singapore road names and GPS speed, with expressway-only reference timing. No paid map APIs, navigation destination, Android Auto integration, or journey upload.
 
 ## Run
 
@@ -14,11 +14,13 @@ npm run dev
 
 Open http://localhost:4173. Live device location requires HTTPS (localhost is an exception). A phone needs the deployed HTTPS address; another machine's localhost is not a phone preview. Allow precise location before driving, keep the PWA foregrounded, and use the screen wake lock where supported. Demo controls simulate movement over the same road geometry as live mode.
 
-For a personal Cloudflare account, `npx wrangler deploy` uses `wrangler.jsonc`. Installable manifest, icons, service worker and road bundle are included. The Sites deployment is private by default.
+For a personal Cloudflare account, `npx wrangler deploy` uses `wrangler.jsonc`. Installable manifest, icons, service worker and road bundle are included. The current Sites deployment is public; access is managed through Sites.
 
 ## Product behaviour
 
-- Detect expressway/direction from successive device fixes, heading and geometry.
+- Identify mapped public motor roads and ramps using a spatial index, heading and recent fixes. Display GPS speed everywhere; require two consistent fixes before confirming a road.
+- Enable delta and upcoming exits only on confirmed mainlines of the ten expressways. Suppress timing at ambiguous local-road/expressway overlaps.
+- Light, Dark and System themes follow a saved device preference. The separately labelled Screen awake control manages wake lock.
 - Follow the current mainline, show up to three mapped exits ahead, update as exits pass.
 - Compare actual elapsed time with reference travel time over matched distance. Negative delta means ahead/faster; positive means behind/slower. A positive delta is not permission to exceed the posted speed limit.
 - Starting midway means tracking since detection, not reconstructed entrance history. Road changes and uncertain fixes can restart the reference session.
@@ -43,4 +45,8 @@ Replay tests validate calculations and data wiring. They do not replace passenge
 
 ## Validation completed
 
-Eight engine tests and three integration tests pass. The integration replay covers twenty long directed paths with over 15,000 comparable fixes, checking timing continuity and duplicate-free exit rows. Chromium checks covered live BKE identification with injected device positions, all ten demo selectors, mobile/desktop layouts, offline reload, location-error clearing, recovery and the stale-fix watchdog. These tests use simulated positions, not road measurements.
+Eleven engine tests and six integration tests pass. The integration replay covers twenty long directed paths with over 15,000 replay fixes, checking timing continuity and duplicate-free exit rows. Chromium checks also covered Light/Dark/System preference changes and persistence, local-road name and speed with delta disabled, responsive layouts down to 320px, offline reload of the compressed all-road bundle, and live BKE identification with injected device positions, all ten demo selectors, mobile/desktop layouts, offline reload, location-error clearing, recovery and the stale-fix watchdog. The v1-to-v2 service-worker upgrade was also checked, with no automatic page reload during a drive. These tests use simulated positions, not road measurements.
+
+## Updating an installed copy
+
+The service worker precaches the compressed local-road bundle (about 1.9 MB transfer; roughly 17 MB expanded JSON). The plain JSON fallback supports browsers without DecompressionStream and is cached after use. Existing open copies show a parked-reload notice when supported; no drive is automatically reloaded. If the first release remains visible, refresh again after the update finishes or close and reopen the PWA. Newer road data is still a snapshot, not a live road feed.
