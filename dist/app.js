@@ -1,7 +1,8 @@
+import { APP_VERSION, BUILD_ID } from './version.js';
 import { Tracker, sampleAt, roadLengthM } from './engine.js';
 
 const $ = id => document.getElementById(id);
-const ui = Object.fromEntries(['clock','themeSelect','wakeButton','settingsButton','safetyGate','parkedButton','demoSettings','speedWarning','deltaLabel','infoDrawer','closeInfoButton','drawerBackdrop','modeBadge','signalText','signalDot','setupPanel','liveButton','demoButton','drivePanel','changeModeButton','roadRef','roadDirection','instrumentGrid','speedStatus','speedValue','speedTrackFill','limitValue','limitContext','deltaValue','deltaDescription','exitList','elapsedValue','accuracyValue','updatedValue','roadNote','trackingDiagnostics','demoControls','demoRoad','demoDirection','demoSpeed','demoSpeedOutput','demoPlayButton','networkText','coverageText','sourceText'].map(id => [id,$(id)]));
+const ui = Object.fromEntries(['clock','appVersion','updateNotice','updateButton','themeSelect','wakeButton','settingsButton','safetyGate','parkedButton','demoSettings','speedWarning','deltaLabel','infoDrawer','closeInfoButton','drawerBackdrop','modeBadge','signalText','signalDot','setupPanel','liveButton','demoButton','drivePanel','changeModeButton','roadRef','roadDirection','instrumentGrid','speedStatus','speedValue','speedTrackFill','limitValue','limitContext','deltaValue','deltaDescription','exitList','elapsedValue','accuracyValue','updatedValue','roadNote','trackingDiagnostics','demoControls','demoRoad','demoDirection','demoSpeed','demoSpeedOutput','demoPlayButton','networkText','coverageText','sourceText'].map(id => [id,$(id)]));
 const STALE_MS = 15000;
 const colorScheme=matchMedia('(prefers-color-scheme: dark)');
 function applyTheme(choice){const resolved=choice==='system'?(colorScheme.matches?'dark':'light'):choice;document.documentElement.dataset.theme=resolved;document.querySelector('meta[name="theme-color"]')?.setAttribute('content',resolved==='light'?'#e8efe5':'#101411');ui.themeSelect.value=choice;}
@@ -63,5 +64,44 @@ function syncVisibleHeight(){const height=window.visualViewport?.height||window.
 function initEvents(){initTheme();syncVisibleHeight();window.visualViewport?.addEventListener('resize',syncVisibleHeight);window.addEventListener('resize',syncVisibleHeight);ui.parkedButton.addEventListener('click',()=>{parkedConfirmed=true;ui.safetyGate.hidden=true;if(dataReady)startLive();else setSignal('Loading Singapore road names…','warn');});if(!('wakeLock'in navigator)){ui.wakeButton.disabled=true;ui.wakeButton.textContent='Screen awake unavailable';}ui.liveButton.addEventListener('click',startLive);ui.demoButton.addEventListener('click',startDemo);ui.changeModeButton.addEventListener('click',showReady);ui.demoRoad.addEventListener('change',updateDemoDirections);ui.demoDirection.addEventListener('change',selectDemoRoad);ui.demoSpeed.addEventListener('input',()=>{ui.demoSpeedOutput.value=`${ui.demoSpeed.value} km/h`;});ui.demoPlayButton.addEventListener('click',()=>{demoPaused=!demoPaused;ui.demoPlayButton.textContent=demoPaused?'Resume demo':'Pause demo';setSignal(demoPaused?'DEMO · paused':'DEMO · simulated location',demoPaused?'warn':'good');});ui.wakeButton.addEventListener('click',toggleWake);ui.settingsButton.addEventListener('click',openInfo);ui.closeInfoButton.addEventListener('click',closeInfo);ui.drawerBackdrop.addEventListener('click',closeInfo);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!ui.infoDrawer.hidden)closeInfo();if(e.key==='Tab'&&!ui.infoDrawer.hidden){const focusable=[...ui.infoDrawer.querySelectorAll('button,a,[tabindex]:not([tabindex="-1"])')];if(e.shiftKey&&document.activeElement===focusable[0]){e.preventDefault();focusable.at(-1)?.focus();}else if(!e.shiftKey&&document.activeElement===focusable.at(-1)){e.preventDefault();focusable[0]?.focus();}}});document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&mode!=='ready'&&!wakeLock)requestWake();});window.addEventListener('pagehide',()=>{clearSession();wakeLock?.release();});window.addEventListener('online',updateNetwork);window.addEventListener('offline',updateNetwork);}
 function updateNetwork(){ui.networkText.textContent=navigator.onLine?'LOCAL SESSION':'OFFLINE · LOCAL SESSION';}
 function updateClock(){ui.clock.textContent=new Date().toLocaleTimeString('en-SG',{hour:'2-digit',minute:'2-digit',hour12:false});}
-async function init(){initEvents();updateClock();setInterval(updateClock,15000);updateNetwork();try{setSignal('Loading Singapore road names…','warn');const response=await fetch('./data/roads.json');if(!response.ok)throw new Error(`Road data ${response.status}`);roadsData=await response.json();let localData={roads:[]};try{if('DecompressionStream'in window){const compressed=await fetch('./data/local-roads.json.gz');if(!compressed.ok)throw new Error('Compressed road data unavailable');localData=await new Response(compressed.body.pipeThrough(new DecompressionStream('gzip'))).json();}else{const plain=await fetch('./data/local-roads.json');if(!plain.ok)throw new Error('Local road data unavailable');localData=await plain.json();}}catch(error){const plain=await fetch('./data/local-roads.json');if(!plain.ok)throw new Error('Local road data unavailable');localData=await plain.json();}combinedData={...roadsData,localRoads:localData.roads||[]};tracker=new Tracker(combinedData);const meta=roadsData.metadata||{};ui.coverageText.textContent=`Coverage includes ${new Set(roadList().map(r=>r.ref)).size} expressway references and ${(localData.roads||[]).length.toLocaleString()} additional road and ramp segments. Road names and speed are available beyond expressways; delta activates only on confirmed mainlines. Speed limits and exit locations may be missing or outdated. Missing or implausible speed tags use a clearly marked assumed 50 km/h reference. Pace delta starts only after confirmed mainline tracking.`;ui.sourceText.textContent=`Road data: ${meta.sourceAttribution||'© OpenStreetMap contributors'} · ${meta.license||'ODbL-1.0'}. ${meta.note||'Map data may be incomplete.'}`;dataReady=true;if(parkedConfirmed)startLive();else setSignal('Ready · confirm while parked to continue');}catch(err){console.error(err);setSignal('Road data unavailable','warn');}if('serviceWorker'in navigator){const hadController=!!navigator.serviceWorker.controller;navigator.serviceWorker.addEventListener('controllerchange',()=>{if(!hadController)return;const button=document.createElement('button');button.type='button';button.className='update-button';button.textContent='Update ready · reload while parked';button.addEventListener('click',()=>location.reload());ui.networkText.replaceChildren(button);},{once:true});navigator.serviceWorker.register('./sw.js').then(reg=>reg.update()).catch(()=>{});}}
+let updateRequested=false, updateRegistration=null, lastUpdateCheck=0, updateReloaded=false;
+function showWaitingUpdate(registration){
+  if(!navigator.serviceWorker.controller||!registration.waiting)return;
+  updateRegistration=registration;
+  ui.updateNotice.hidden=false;
+  ui.settingsButton.setAttribute('aria-label','Settings and information · update ready');
+  ui.settingsButton.classList.add('has-update');
+}
+async function checkForAppUpdate(force=false){
+  if(!updateRegistration||!navigator.onLine)return;
+  const now=Date.now();if(!force&&now-lastUpdateCheck<15*60*1000)return;
+  lastUpdateCheck=now;
+  try{await updateRegistration.update();showWaitingUpdate(updateRegistration);}catch{} // Stay on the installed version offline.
+}
+function reloadAfterApprovedUpdate(){if(updateRequested&&!updateReloaded){updateReloaded=true;location.reload();}}
+function setupServiceWorker(){
+  if(!('serviceWorker'in navigator))return;
+  navigator.serviceWorker.addEventListener('controllerchange',reloadAfterApprovedUpdate);
+  ui.updateButton.addEventListener('click',()=>{
+    const waiting=updateRegistration?.waiting;
+    if(!waiting)return;
+    updateRequested=true;ui.updateButton.disabled=true;ui.updateButton.textContent='Updating…';
+    waiting.addEventListener('statechange',()=>{if(waiting.state==='activated')reloadAfterApprovedUpdate();});
+    waiting.postMessage({type:'SKIP_WAITING'});
+  });
+  navigator.serviceWorker.register('./sw.js').then(registration=>{
+    updateRegistration=registration;
+    showWaitingUpdate(registration);
+    registration.addEventListener('updatefound',()=>{
+      const installing=registration.installing;
+      installing?.addEventListener('statechange',()=>{
+        if(installing.state==='installed')showWaitingUpdate(registration);
+      });
+    });
+    checkForAppUpdate(true);
+  }).catch(()=>{});
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkForAppUpdate();});
+  window.addEventListener('online',()=>checkForAppUpdate(true));
+}
+async function init(){initEvents();ui.appVersion.textContent=`v${APP_VERSION} · build ${BUILD_ID}`;setupServiceWorker();updateClock();setInterval(updateClock,15000);updateNetwork();try{setSignal('Loading Singapore road names…','warn');const response=await fetch('./data/roads.json');if(!response.ok)throw new Error(`Road data ${response.status}`);roadsData=await response.json();let localData={roads:[]};try{if('DecompressionStream'in window){const compressed=await fetch('./data/local-roads.json.gz');if(!compressed.ok)throw new Error('Compressed road data unavailable');localData=await new Response(compressed.body.pipeThrough(new DecompressionStream('gzip'))).json();}else{const plain=await fetch('./data/local-roads.json');if(!plain.ok)throw new Error('Local road data unavailable');localData=await plain.json();}}catch(error){const plain=await fetch('./data/local-roads.json');if(!plain.ok)throw new Error('Local road data unavailable');localData=await plain.json();}combinedData={...roadsData,localRoads:localData.roads||[]};tracker=new Tracker(combinedData);const meta=roadsData.metadata||{};ui.coverageText.textContent=`Coverage includes ${new Set(roadList().map(r=>r.ref)).size} expressway references and ${(localData.roads||[]).length.toLocaleString()} additional road and ramp segments. Road names and speed are available beyond expressways; delta activates only on confirmed mainlines. Speed limits and exit locations may be missing or outdated. Missing or implausible speed tags use a clearly marked assumed 50 km/h reference. Pace delta starts only after confirmed mainline tracking.`;ui.sourceText.textContent=`Road data: ${meta.sourceAttribution||'© OpenStreetMap contributors'} · ${meta.license||'ODbL-1.0'}. ${meta.note||'Map data may be incomplete.'}`;dataReady=true;if(parkedConfirmed)startLive();else setSignal('Ready · confirm while parked to continue');}catch(err){console.error(err);setSignal('Road data unavailable','warn');}}
 init();

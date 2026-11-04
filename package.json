@@ -1,11 +1,12 @@
 {
   "name": "delta-sg",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node dist/engine.test.mjs && node integration.test.mjs",
     "dev": "python3 -m http.server 4173 --directory dist",
-    "check": "node --check dist/app.js && node --check dist/engine.js && node --check dist/sw.js"
+    "check": "node scripts/build-version.mjs --check && node --check dist/app.js && node --check dist/engine.js && node --check dist/sw.js",
+    "build:version": "node scripts/build-version.mjs"
   }
 }
