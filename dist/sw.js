@@ -1,4 +1,4 @@
-const CACHE = 'delta-sg-v6-safety-copy';
+const CACHE = 'delta-sg-v7-compact-tracking';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './engine.js', './data/roads.json', './data/local-roads.json.gz', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS.map(url => new Request(url, { cache: 'reload' })))).then(() => self.skipWaiting()));

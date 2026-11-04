@@ -30,12 +30,12 @@ test('matches direction using heading and reports three upcoming exits', () => {
 
 test('delta starts at detection, grows while stopped, and exit forecast uses current speed', () => {
   const tracker = new Tracker({ roads: [road] });
-  assert.equal(start(tracker, road).deltaSeconds, 0);
+  assert.equal(start(tracker, road).deltaSeconds, 1);
   const moving = tracker.update(at(road, 300, 11000, 20));
-  assert.ok(Math.abs(moving.deltaSeconds - 2) < 0.2);
+  assert.ok(Math.abs(moving.deltaSeconds - 3) < 0.2);
   assert.ok(moving.exits[0].projectedDeltaSeconds > moving.deltaSeconds);
   const stopped = tracker.update(at(road, 300, 16000, 0));
-  assert.ok(Math.abs(stopped.deltaSeconds - 7) < 0.2);
+  assert.ok(Math.abs(stopped.deltaSeconds - 8) < 0.2);
   assert.equal(stopped.exits[0].projectedDeltaSeconds, null);
 });
 
@@ -62,9 +62,14 @@ test('bad fix and long GPS gap invalidate accumulated delta', () => {
   start(tracker, road);
   assert.ok(tracker.update(at(road, 150, 6000)).deltaSeconds !== 0);
   assert.equal(tracker.update({ ...at(road, 160, 7000), accuracy: 200 }).status, 'stale');
-  assert.equal(tracker.update(at(road, 170, 8000)).status, 'identifying');
-  assert.equal(tracker.update(at(road, 170, 9000)).deltaSeconds, 0);
-  assert.equal(tracker.update(at(road, 180, 30000)).deltaSeconds, 0);
+  const reacquired = tracker.update(at(road, 170, 8000));
+  assert.equal(reacquired.status, 'tracking');
+  assert.equal(reacquired.deltaSeconds, null);
+  assert.equal(reacquired.timingBasis, 'since reacquisition');
+  assert.ok(Number.isFinite(tracker.update(at(road, 180, 9000)).deltaSeconds));
+  const resumed = tracker.update(at(road, 180, 30000));
+  assert.ok(Number.isFinite(resumed.deltaSeconds));
+  assert.equal(resumed.timingBasis, 'since detection');
 });
 
 test('tunnel reduces confidence', () => {
@@ -125,13 +130,16 @@ test('local road and ramp transition require confirmation before expressway timi
   assert.equal(tracker.update({ ...localFix, timestamp: epoch + 1500 }).status, 'local');
   const rampFix = at(ramp, 150, 2000);
   assert.equal(tracker.update(rampFix).status, 'identifying');
-  assert.equal(tracker.update({ ...rampFix, timestamp: epoch + 3000 }).status, 'local');
-  const main = at(road, 200, 4000);
+  assert.equal(tracker.update({ ...rampFix, timestamp: epoch + 8000 }).status, 'local');
+  const main = at(road, 200, 9000);
   const entering = tracker.update(main);
   assert.equal(entering.status, 'entering');
   assert.equal(entering.deltaSeconds, null);
   assert.deepEqual(entering.exits, []);
-  assert.equal(tracker.update({ ...main, timestamp: epoch + 5000 }).status, 'tracking');
+  const confirmed = tracker.update({ ...main, timestamp: epoch + 15000 });
+  assert.equal(confirmed.status, 'tracking');
+  assert.equal(confirmed.entryTime, epoch + 9000);
+  assert.equal(confirmed.entrySource, 'first-mainline-fix');
 });
 
 test('closer parallel local road wins and unmatched fix still shows GPS speed', () => {
@@ -169,4 +177,79 @@ test('local roads show mapped or assumed limits without timing', () => {
   const assumed = unknown.update(at(local, 100, 1000));
   assert.equal(assumed.limitKmh, 50);
   assert.equal(assumed.limitAssumed, true);
+});
+
+test('six second road switch retains confirmed label and suppresses forecasts', () => {
+  const local = { id: 'street', name: 'Street', coordinates: [[103.9, 1.349], [103.91, 1.349]] };
+  const tracker = new Tracker({ roads: [road], localRoads: [local] });
+  start(tracker, road);
+  const first = tracker.update(at(local, 100, 2000));
+  assert.equal(first.status, 'exiting');
+  assert.equal(first.road.ref, 'TPE');
+  assert.equal(first.candidateRoad.name, 'Street');
+  assert.equal(first.deltaSeconds, null);
+  assert.deepEqual(first.exits, []);
+  const bounce = tracker.update(at(road, 100, 3000));
+  assert.equal(bounce.status, 'tracking');
+  assert.equal(bounce.deltaSeconds, null);
+  tracker.update(at(local, 100, 4000));
+  assert.equal(tracker.update(at(local, 100, 9000)).status, 'exiting');
+  assert.equal(tracker.update(at(local, 100, 10000)).status, 'local');
+});
+
+test('stale GPS preserves last road and entry history without live readings', () => {
+  const tracker = new Tracker({ roads: [road] });
+  const detected = start(tracker, road);
+  const stale = tracker.invalidate('Tunnel GPS gap');
+  assert.equal(stale.status, 'stale');
+  assert.equal(stale.road.ref, 'TPE');
+  assert.equal(stale.entryTime, detected.entryTime);
+  assert.equal(stale.speedKmh, null);
+  assert.equal(stale.deltaSeconds, null);
+  assert.deepEqual(stale.exits, []);
+});
+
+test('first detection in tunnel labels entry uncertainty', () => {
+  const tunnelRoad = { ...road, tunnel: true };
+  const tracker = new Tracker({ roads: [tunnelRoad] });
+  const state = start(tracker, tunnelRoad);
+  assert.equal(state.entrySource, 'first-mainline-fix');
+  assert.equal(state.entryConfidence, 'low');
+  assert.ok(state.entryUncertaintyMs > 0);
+  assert.equal(state.entryTime, epoch);
+});
+
+test('long tunnel gap reconstructs unique same-chain route and original session', () => {
+  const a = { ...road, id: 'a', coordinates: [[103.9, 1.35], [103.91, 1.35]],
+    lengthM: 1112, nextRoadIds: ['b'], exits: [] };
+  const b = { ...road, id: 'b', coordinates: [[103.91, 1.35], [103.92, 1.35]],
+    lengthM: 1112, nextRoadIds: ['c'], tunnel: true, exits: [] };
+  const c = { ...road, id: 'c', coordinates: [[103.92, 1.35], [103.93, 1.35]],
+    lengthM: 1112, nextRoadIds: [], exits: [] };
+  const tracker = new Tracker({ roads: [a, b, c] });
+  start(tracker, a);
+  const before = tracker.update(at(a, 500, 6000));
+  const entry = before.entryTime;
+  const gap = tracker.invalidate('Tunnel signal lost');
+  assert.equal(gap.deltaSeconds, null);
+  assert.equal(gap.speedKmh, null);
+  const after = tracker.update(at(c, 300, 160000));
+  assert.equal(after.status, 'tracking');
+  assert.equal(after.entryTime, entry);
+  assert.equal(after.timingBasis, 'since detection');
+  assert.equal(after.fullSessionAvailable, true);
+  assert.ok(after.elapsedSeconds > 150);
+  assert.ok(Number.isFinite(after.deltaSeconds));
+});
+
+test('branching tunnel path refuses full-session reconstruction', () => {
+  const a = { ...road, id: 'a', nextRoadIds: ['b', 'c'], exits: [] };
+  const b = { ...road, id: 'b', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: [] };
+  const c = { ...road, id: 'c', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: [] };
+  const tracker = new Tracker({ roads: [a, b, c] });
+  start(tracker, a);
+  tracker.invalidate('Tunnel signal lost');
+  const state = tracker.update(at(b, 100, 60000));
+  assert.equal(state.deltaSeconds, null);
+  assert.notEqual(state.timingBasis, 'since detection');
 });
