@@ -388,3 +388,76 @@ test('GPS accuracy spanning a lower speed limit marks current limit uncertain', 
   assert.equal(state.limitKmh, 70);
   assert.equal(state.limitUncertain, true);
 });
+
+test('provisional CTE first fix survives tunnel GPS loss until unique route confirmation', () => {
+  const cte = byId.get('osm-way-16894437');
+  const next = byId.get('osm-way-666001761');
+  assert.equal(cte.ref, 'CTE');
+  assert.equal(cte.tunnel, true);
+  assert.ok(cte.routeNextRoadIds.some(edge => edge.roadId === next.id));
+  const tracker = new Tracker({ roads: [cte, next], connectors: bundle.connectors });
+  const base = 1_800_000_000_000;
+  const fix = (road, metres, ms) => ({ ...sampleAt(road, metres),
+    accuracy: 5, speed: 20, timestamp: base + ms });
+  const first = tracker.update(fix(cte, 100, 0));
+  assert.equal(first.provisional, true);
+  assert.equal(first.entryTime, base);
+  assert.equal(first.deltaSeconds, null);
+  const gap = tracker.invalidate('Tunnel GPS unavailable');
+  assert.equal(gap.provisional, true);
+  assert.equal(gap.entryTime, base);
+  assert.equal(gap.speedKmh, null);
+  assert.equal(gap.deltaSeconds, null);
+  assert.deepEqual(gap.exits, []);
+  const returned = tracker.update(fix(cte, 500, 20000));
+  assert.equal(returned.entryTime, base);
+  const confirmed = tracker.update(fix(cte, 550, 22000));
+  assert.equal(confirmed.status, 'tracking');
+  assert.equal(confirmed.entryTime, base);
+  assert.equal(confirmed.elapsedClockSeconds, 22);
+  assert.equal(confirmed.timingBasis, 'since detection');
+  assert.ok(Number.isFinite(confirmed.deltaSeconds));
+});
+
+test('contradicting local road clears unconfirmed CTE entry evidence', () => {
+  const cte = byId.get('osm-way-16894437');
+  const localRoad = { id: 'contradicting-local', name: 'Local road', highway: 'primary',
+    coordinates: cte.coordinates.map(([lon, lat]) => [lon + .002, lat]) };
+  const tracker = new Tracker({ roads: [cte], localRoads: [localRoad] });
+  const base = 1_800_000_000_000;
+  const fix = (road, metres, ms) => ({ ...sampleAt(road, metres),
+    accuracy: 5, speed: 20, timestamp: base + ms });
+  assert.equal(tracker.update(fix(cte, 100, 0)).provisional, true);
+  tracker.update(fix(localRoad, 150, 1000));
+  const localState = tracker.update(fix(localRoad, 180, 2000));
+  assert.equal(localState.status, 'local');
+  assert.equal(localState.deltaSeconds, null);
+  assert.equal(localState.provisional, false);
+  assert.equal(localState.entryTime, null);
+});
+
+test('no fix, poor accuracy, overlap, and reset cannot fabricate provisional entry', () => {
+  const cte = byId.get('osm-way-16894437');
+  const base = 1_800_000_000_000;
+  const fix = { ...sampleAt(cte, 100), accuracy: 5, speed: 20, timestamp: base };
+  const emptyTracker = new Tracker({ roads: [cte] });
+  const noFix = emptyTracker.invalidate('Tunnel GPS unavailable');
+  assert.equal(noFix.entryTime, null);
+  assert.equal(noFix.provisional, false);
+  const inaccurate = emptyTracker.update({ ...fix, accuracy: 100 });
+  assert.equal(inaccurate.entryTime, null);
+  assert.equal(inaccurate.provisional, false);
+  const overlap = { id: 'overlap', name: 'Overpass', highway: 'primary',
+    coordinates: cte.coordinates };
+  const ambiguous = new Tracker({ roads: [cte], localRoads: [overlap] });
+  const ambiguousState = ambiguous.update(fix);
+  assert.equal(ambiguousState.status, 'identifying');
+  assert.equal(ambiguousState.entryTime, null);
+  assert.equal(ambiguousState.provisional, false);
+  emptyTracker.reset();
+  const provisional = emptyTracker.update({ ...fix, timestamp: base + 1000 });
+  assert.equal(provisional.provisional, true);
+  const reset = emptyTracker.reset();
+  assert.equal(reset.entryTime, null);
+  assert.equal(reset.provisional, false);
+});

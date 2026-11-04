@@ -14,7 +14,7 @@ const at = (r, metres, timestamp, speed = 20, heading) =>
   ({ ...sampleAt(r, metres), accuracy: 5, timestamp: epoch + timestamp, speed,
     ...(heading == null ? {} : { heading }) });
 const start = (tracker, r, metres = 100) => {
-  assert.equal(tracker.update(at(r, metres, 0)).status, 'identifying');
+  assert.equal(tracker.update(at(r, metres, 0)).status, 'entering');
   return tracker.update(at(r, metres, 1000));
 };
 
@@ -305,4 +305,63 @@ test('uncertainty detects a short lower-limit zone inside GPS radius', () => {
   const state = tracker.update({ ...at(zoned, 280, 1000), accuracy: 25 });
   assert.equal(state.limitKmh, 90);
   assert.equal(state.limitUncertain, true);
+});
+
+test('one credible mainline fix survives a tunnel outage and anchors recovered session', () => {
+  const a = { ...road, id: 'ctea', ref: 'CTE', nextRoadIds: ['cteb'], exits: [] };
+  const b = { ...road, id: 'cteb', ref: 'CTE', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: [], exits: [] };
+  const tracker = new Tracker({ roads: [a, b] });
+  const first = tracker.update(at(a, 100, 0));
+  assert.equal(first.status, 'entering');
+  assert.equal(first.provisional, true);
+  assert.equal(first.entryTime, epoch);
+  const stale = tracker.invalidate('GPS unavailable');
+  assert.equal(stale.provisional, true);
+  assert.equal(stale.road.ref, 'CTE');
+  assert.equal(stale.speedKmh, null);
+  assert.equal(stale.deltaSeconds, null);
+  assert.deepEqual(stale.exits, []);
+  const recovered = tracker.update(at(b, 100, 30000));
+  assert.equal(recovered.status, 'tracking');
+  assert.equal(recovered.entryTime, epoch);
+  assert.equal(recovered.reconstructionStatus, 'reconstructed');
+  assert.equal(recovered.timingBasis, 'since detection');
+  assert.ok(Number.isFinite(recovered.deltaSeconds));
+});
+
+test('provisional contradiction cannot backdate an unrelated route and reset clears it', () => {
+  const unrelated = { ...road, id: 'other', ref: 'PIE', coordinates: [[103.92, 1.35], [103.93, 1.35]] };
+  const tracker = new Tracker({ roads: [road, unrelated] });
+  tracker.update(at(road, 100, 0));
+  tracker.invalidate('GPS unavailable');
+  const contradicted = tracker.update(at(unrelated, 100, 30000));
+  assert.equal(contradicted.deltaSeconds, null);
+  assert.notEqual(contradicted.reconstructionStatus, 'reconstructed');
+  const reset = tracker.reset();
+  assert.equal(reset.entryTime, null);
+  assert.equal(tracker.provisional, null);
+});
+
+test('provisional fork cannot invent a full-session delta', () => {
+  const a = { ...road, id: 'a', nextRoadIds: ['b', 'c'] };
+  const b = { ...road, id: 'b', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: ['d'] };
+  const c = { ...road, id: 'c', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: ['d'] };
+  const d = { ...road, id: 'd', coordinates: [[103.92, 1.35], [103.93, 1.35]], nextRoadIds: [] };
+  const tracker = new Tracker({ roads: [a, b, c, d] });
+  tracker.update(at(a, 100, 0));
+  tracker.invalidate('Tunnel GPS gap');
+  const state = tracker.update(at(d, 100, 60000));
+  assert.equal(state.deltaSeconds, null);
+  assert.equal(state.reconstructionStatus, 'unresolved');
+  assert.equal(tracker.provisional, null);
+});
+
+test('unreliable first fix cannot create provisional entry', () => {
+  const tracker = new Tracker({ roads: [road] });
+  const first = tracker.update({ ...at(road, 100, 0), accuracy: 55, heading: null });
+  assert.equal(first.provisional, false);
+  assert.equal(first.entryTime, null);
+  const stale = tracker.invalidate('GPS unavailable');
+  assert.equal(stale.status, 'stale');
+  assert.equal(stale.entryTime, null);
 });

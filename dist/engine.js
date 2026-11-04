@@ -147,7 +147,8 @@ function empty(status, reason = null) {
     alongM: null, matchedDistanceM: null, inTunnel: false,
     entryTime: null, entrySource: null, entryConfidence: null, entryUncertaintyMs: null,
     timingBasis: null, elapsedClockSeconds: null, candidateRoad: null,
-    limitUncertain: false, cumulativeReferenceAssumed: false, reconstructionStatus: 'none' };
+    limitUncertain: false, cumulativeReferenceAssumed: false, reconstructionStatus: 'none',
+    provisional: false };
 }
 
 export class Tracker {
@@ -228,6 +229,7 @@ export class Tracker {
     this.fullSessionAvailable = true;
     this.cumulativeReferenceAssumed = false;
     this.reconstructionStatus = 'none';
+    this.provisional = null;
     this.state = empty('searching');
     return this.state;
   }
@@ -242,14 +244,18 @@ export class Tracker {
     this.reconstructionStatus = 'pending';
     this.pending = null;
     this.sessionStartMs = null;
-    return this.state = { ...empty('stale', reason), road: preserveContext ? this.state.road : null,
+    const provisional = preserveContext ? this.provisional : null;
+    const provisionalRoad = provisional && (!this.currentRoad || !this.byId.has(this.currentRoad.id));
+    return this.state = { ...empty(provisionalRoad ? 'entering' : 'stale',
+      provisionalRoad ? 'Pending confirmation: GPS unavailable' : reason),
+      road: preserveContext ? this.state.road : null,
       entryTime: this.entryTime, entrySource: this.entrySource,
       entryConfidence: this.entryConfidence, entryUncertaintyMs: this.entryUncertaintyMs,
       elapsedSeconds: this.entryTime == null ? null : Math.max(0, (Date.now() - this.entryTime) / 1000),
       elapsedClockSeconds: this.entryTime == null ? null : Math.max(0, (Date.now() - this.entryTime) / 1000),
       timingBasis: this.entryTime == null ? null : 'since detection',
       fullSessionAvailable: false, cumulativeReferenceAssumed: this.cumulativeReferenceAssumed,
-      reconstructionStatus: this.reconstructionStatus };
+      reconstructionStatus: this.reconstructionStatus, provisional: !!provisional };
   }
 
   connected(from, to) {
@@ -450,6 +456,43 @@ export class Tracker {
     }
 
     const selectedExpressway = this.byId.has(selected.road.id);
+    const credibleEntry = selectedExpressway && !this.byId.has(this.currentRoad?.id) &&
+      accuracy <= 30 && selected.match.distanceM <= Math.max(15, accuracy) &&
+      headingUseful && selected.turn <= 45;
+    if (credibleEntry && !this.provisional && this.reconstructionStatus !== 'unresolved') {
+      this.provisional = { road: selected.road, fix: { time, alongM: selected.match.alongM, point },
+        accuracy, heading };
+      this.entryTime = time;
+      this.entrySource = 'first-mainline-fix';
+      this.entryConfidence = isTunnel(selected.road, selected.match.alongM) ? 'low' : 'approximate';
+      this.entryUncertaintyMs = Math.round(accuracy / Math.max(2, speedMps || 0) * 1000);
+    }
+    if (this.provisional && this.reconstructionStatus === 'pending' && !this.gapAnchor) {
+      const evidence = this.provisional;
+      const path = selectedExpressway ? this.gapPath(evidence.road, selected.road) : null;
+      const reference = path && this.gapReference(path, evidence.fix.alongM, selected.match.alongM);
+      const travel = path ? path.slice(0, -1).reduce((sum, r, i) => sum +
+        (r.lengthM || roadLengthM(r)) - (i ? 0 : evidence.fix.alongM), 0) + selected.match.alongM : -1;
+      const dt = (time - evidence.fix.time) / 1000;
+      if (path && reference != null && dt > 0 && travel >= 0 && travel <= dt * 55 + accuracy * 3) {
+        this.confirmed = true;
+        this.currentRoad = selected.road;
+        this.previous = { time, alongM: selected.match.alongM, point };
+        this.elapsedSeconds = dt;
+        this.referenceSeconds = reference;
+        this.cumulativeReferenceAssumed = this.pathAssumed(path, evidence.fix.alongM, selected.match.alongM);
+        this.deltaValid = true;
+        this.fullSessionAvailable = true;
+        this.reconstructionStatus = 'reconstructed';
+        this.sessionStartMs = evidence.fix.time;
+        this.reacquiring = false;
+        this.provisional = null;
+      } else {
+        this.provisional = null;
+        this.fullSessionAvailable = false;
+        this.reconstructionStatus = 'unresolved';
+      }
+    }
     if (this.gapAnchor && selectedExpressway) {
       const anchor = this.gapAnchor;
       const path = this.gapPath(anchor.road, selected.road);
@@ -493,6 +536,7 @@ export class Tracker {
         this.previous = null;
         this.sessionStartMs = null;
         return this.state = { ...empty(this.confirmed && currentExpressway ? 'exiting' :
+          selectedExpressway && this.provisional ? 'entering' :
           this.confirmed && selectedExpressway ? 'entering' : 'identifying', 'Confirming road'),
           speedKmh, road: this.confirmed ? this.state.road : {
             id: selected.road.id, ref: selected.road.ref || null,
@@ -503,9 +547,13 @@ export class Tracker {
             id: selected.road.id, name: selected.road.name || selected.road.ref || 'Unnamed road',
             kind: selectedExpressway ? 'expressway' : selected.road.highway === 'motorway_link' ? 'ramp' : 'local' },
           entryTime: this.entryTime, entrySource: this.entrySource,
-          entryConfidence: this.entryConfidence, entryUncertaintyMs: this.entryUncertaintyMs };
+          entryConfidence: this.entryConfidence, entryUncertaintyMs: this.entryUncertaintyMs,
+          provisional: !!this.provisional,
+          elapsedClockSeconds: this.entryTime == null ? null : (time - this.entryTime) / 1000,
+          reconstructionStatus: this.reconstructionStatus };
       }
       this.confirmed = true;
+      this.provisional = null;
       this.previous = selectedExpressway && this.pending.firstTime < time ? {
         time: this.pending.firstTime, alongM: this.pending.firstMatch.alongM,
         point: vertices(this.pending.firstRoad)[0] } : null;

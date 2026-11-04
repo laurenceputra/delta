@@ -30,6 +30,12 @@ def direction(coords):
     return ('E' if dx >= 0 else 'W') if abs(dx) >= abs(dy) else ('N' if dy >= 0 else 'S')
 
 
+def heading_deg(a, b):
+    dx = (b[0] - a[0]) * math.cos(math.radians((a[1] + b[1]) / 2))
+    dy = b[1] - a[1]
+    return round(math.degrees(math.atan2(dx, dy)) % 360, 1)
+
+
 def speed_kmh(value):
     if not value:
         return None
@@ -144,6 +150,31 @@ def main():
         connector.pop('startNode')
         connector.pop('endNode')
 
+    # An on-ramp entry boundary is the exact shared node where a directed
+    # motorway_link ends on a mainline way. Preserve source node and bearings;
+    # heading gate is guidance, not an observed traffic rule.
+    entries = []
+    entry_seen = set()
+    for link in links:
+        node = link['nodes'][-1]
+        geometry = link['geometry']
+        if len(geometry) < 2:
+            continue
+        ramp_tail = [[p['lon'], p['lat']] for p in geometry[-2:]]
+        for road, i, source_way in by_node.get(node, []):
+            if i >= len(road['coordinates']) - 1:
+                continue
+            key = (link['id'], road['id'])
+            if key in entry_seen:
+                continue
+            entry_seen.add(key)
+            entries.append({'id': f"entry-{link['id']}-{source_way['id']}",
+                            'roadId': road['id'], 'rampId': f"osm-way-{link['id']}",
+                            'osmNodeId': node, 'coordinate': road['coordinates'][i],
+                            'rampHeadingDeg': heading_deg(*ramp_tail),
+                            'mainlineHeadingDeg': heading_deg(road['coordinates'][i], road['coordinates'][i + 1]),
+                            'headingGateDeg': 60, 'source': 'exact shared OSM node'})
+
     by_id = {r['id']: r for r in roads}
     predecessors = {next_id for r in roads for next_id in r['nextRoadIds']}
     chains = []
@@ -191,6 +222,7 @@ def main():
         'coverage': {ref: {'segments': counts[ref], 'speedTaggedSegments': known_speeds[ref], 'mappedExitAttachments': exit_counts[ref]} for ref in REFS},
         'chains': chains,
         'connectors': connectors,
+        'entries': entries,
         'roads': roads,
     }
     path = Path('dist/data/roads.json')
