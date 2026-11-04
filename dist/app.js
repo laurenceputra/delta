@@ -57,7 +57,7 @@ function startDemo(){if(!parkedConfirmed)return;closeInfoIfOpen();clearSession()
 function showReady(){closeInfoIfOpen();clearSession();setMode('ready');setSignal('Choose a mode to begin');resetDashboard();}
 async function requestWake(){if(!('wakeLock'in navigator)||document.visibilityState!=='visible'||mode==='ready')return;try{wakeLock=await navigator.wakeLock.request('screen');ui.wakeButton.setAttribute('aria-pressed','true');ui.wakeButton.textContent='Screen awake: on';wakeLock.addEventListener('release',()=>{wakeLock=null;ui.wakeButton.setAttribute('aria-pressed','false');ui.wakeButton.textContent='Screen awake: off';});}catch{ui.wakeButton.setAttribute('aria-pressed','false');ui.wakeButton.textContent='Screen awake unavailable';}}
 async function toggleWake(){if(wakeLock){await wakeLock.release();wakeLock=null;}else await requestWake();}
-function openInfo(){lastFocus=document.activeElement;ui.drawerBackdrop.hidden=false;ui.infoDrawer.hidden=false;ui.settingsButton.setAttribute('aria-expanded','true');ui.infoDrawer.focus();}
+function openInfo(){ui.infoDrawer.scrollTop=0;lastFocus=document.activeElement;ui.drawerBackdrop.hidden=false;ui.infoDrawer.hidden=false;ui.settingsButton.setAttribute('aria-expanded','true');ui.infoDrawer.focus();}
 function closeInfoIfOpen(){if(!ui.infoDrawer.hidden)closeInfo();}
 function closeInfo(){ui.drawerBackdrop.hidden=true;ui.infoDrawer.hidden=true;ui.settingsButton.setAttribute('aria-expanded','false');lastFocus?.focus();}
 function syncVisibleHeight(){const height=window.visualViewport?.height||window.innerHeight;document.documentElement.style.setProperty('--visible-height',`${Math.round(height)}px`);}

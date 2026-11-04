@@ -47,6 +47,10 @@ Replay tests validate calculations and data wiring. They do not replace passenge
 
 Engine and integration replay tests cover directed route continuity, local-road transitions, GPS gaps, tunnel reconstruction and ambiguous paths. Chromium checks cover theme persistence, compact live and demo layouts, three visible exits on small screens, and offline assets. These tests use simulated positions, not road measurements.
 
+## App v0.3.1
+
+The driving instruments size to their content, keeping the speed value, limit, and limit source inside the card at narrow widths and larger text settings. Compact views retain three exit rows and the bottom safety gutter.
+
 ## Updating an installed copy
 
 The installed code identifies itself in Settings as **App vX.Y.Z · build ABC123…**. The app release number comes from `package.json` and is distinct from the Sites hosting version. The build ID is a deterministic hash of runtime assets and the service worker template, so even an accidental same-version content change produces a new worker cache. For each release, bump `package.json` and run `npm run build:version`; that generates `dist/version.js`, `dist/version.json`, and `dist/sw.js`. `npm run check` fails if these generated files drift from the source.
