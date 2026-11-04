@@ -1,0 +1,15 @@
+{
+  "id": "./",
+  "name": "Delta — Singapore Expressways",
+  "short_name": "Delta SG",
+  "description": "Foreground expressway speed and reference timing companion. Journey data stays on your phone.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#101311",
+  "theme_color": "#101311",
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose":"any maskable"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose":"any maskable"}
+  ]
+}
