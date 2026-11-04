@@ -39,13 +39,22 @@ test('delta starts at detection, grows while stopped, and exit forecast uses cur
   assert.equal(stopped.exits[0].projectedDeltaSeconds, null);
 });
 
-test('unknown speed limit makes comparison unavailable', () => {
+test('unknown speed limit uses visibly assumed 50 km/h reference', () => {
   const tracker = new Tracker({ roads: [{ ...road, speedLimit: null }] });
   start(tracker, road);
   const state = tracker.update(at(road, 200, 6000));
-  assert.equal(state.limitKmh, null);
-  assert.equal(state.deltaSeconds, null);
-  assert.equal(state.exits[0].projectedDeltaSeconds, null);
+  assert.equal(state.limitKmh, 50);
+  assert.equal(state.limitAssumed, true);
+  assert.equal(state.limitSource, 'Assumed 50 km/h reference');
+  assert.ok(Number.isFinite(state.deltaSeconds));
+  assert.equal(state.exits[0].referenceAssumed, true);
+});
+
+test('implausible mapped speed tags use assumed reference', () => {
+  const tracker = new Tracker({ roads: [{ ...road, speedLimit: 500 }] });
+  const state = start(tracker, road);
+  assert.equal(state.limitKmh, 50);
+  assert.equal(state.limitAssumed, true);
 });
 
 test('bad fix and long GPS gap invalidate accumulated delta', () => {
@@ -144,4 +153,20 @@ test('overlapping local road and expressway remain unidentified', () => {
     assert.equal(state.deltaSeconds, null);
     assert.deepEqual(state.exits, []);
   }
+});
+
+test('local roads show mapped or assumed limits without timing', () => {
+  const local = { id: 'local', name: 'Street', coordinates: [[103.9, 1.349], [103.91, 1.349]], speedLimit: 40 };
+  const tracker = new Tracker({ roads: [road], localRoads: [local] });
+  tracker.update(at(local, 100, 0));
+  const mapped = tracker.update(at(local, 100, 1000));
+  assert.equal(mapped.status, 'local');
+  assert.equal(mapped.limitKmh, 40);
+  assert.equal(mapped.limitAssumed, false);
+  assert.equal(mapped.deltaSeconds, null);
+  const unknown = new Tracker({ roads: [road], localRoads: [{ ...local, speedLimit: null }] });
+  unknown.update(at(local, 100, 0));
+  const assumed = unknown.update(at(local, 100, 1000));
+  assert.equal(assumed.limitKmh, 50);
+  assert.equal(assumed.limitAssumed, true);
 });

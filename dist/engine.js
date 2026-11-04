@@ -82,7 +82,25 @@ function limitAt(road, at) {
   const zones = road.speedLimits || [];
   const zone = zones.find(z => at >= (z.fromM ?? z.startM ?? 0) && at < (z.toM ?? z.endM ?? Infinity));
   const value = zone?.limitKmh ?? zone?.speedKmh ?? road.limitKmh ?? road.speedLimitKmh ?? road.speedLimit;
-  return Number.isFinite(value) && value > 0 ? value : null;
+  return Number.isFinite(value) && value > 0 && value <= 90 ? value : 50;
+}
+
+function limitAssumedAt(road, at) {
+  const zones = road.speedLimits || [];
+  const zone = zones.find(z => at >= (z.fromM ?? z.startM ?? 0) && at < (z.toM ?? z.endM ?? Infinity));
+  const value = zone?.limitKmh ?? zone?.speedKmh ?? road.limitKmh ?? road.speedLimitKmh ?? road.speedLimit;
+  return !(Number.isFinite(value) && value > 0 && value <= 90);
+}
+
+function referenceAssumedOn(road, fromM, toM) {
+  if (toM <= fromM) return false;
+  const breaks = [fromM, toM];
+  for (const zone of road.speedLimits || []) {
+    for (const edge of [zone.fromM ?? zone.startM, zone.toM ?? zone.endM])
+      if (Number.isFinite(edge) && edge > fromM && edge < toM) breaks.push(edge);
+  }
+  breaks.sort((a, b) => a - b);
+  return breaks.slice(1).some((edge, i) => limitAssumedAt(road, (breaks[i] + edge) / 2));
 }
 
 function referenceTime(road, fromM, toM) {
@@ -113,7 +131,7 @@ function roadExits(road) {
 
 function empty(status, reason = null) {
   return { status, reason, confidence: 'low', road: null, speedKmh: null,
-    limitKmh: null, deltaSeconds: null, elapsedSeconds: null, exits: [],
+    limitKmh: null, limitAssumed: false, limitSource: null, deltaSeconds: null, elapsedSeconds: null, exits: [],
     alongM: null, matchedDistanceM: null, inTunnel: false };
 }
 
@@ -336,7 +354,9 @@ export class Tracker {
       return this.state = { ...empty('local'), road: { id: road.id, ref: road.ref || null,
         name: road.name || road.ref || 'Unnamed road', direction: road.destination || '',
         kind: road.highway === 'motorway_link' ? 'ramp' : 'local', isExpressway: false },
-        speedKmh, matchedDistanceM: match.distanceM, alongM: match.alongM,
+        speedKmh, limitKmh: limitAt(road, match.alongM), limitAssumed: limitAssumedAt(road, match.alongM),
+        limitSource: limitAssumedAt(road, match.alongM) ? 'Assumed 50 km/h reference' : 'OSM maxspeed tag',
+        matchedDistanceM: match.distanceM, alongM: match.alongM,
         confidence: accuracy > 30 || match.distanceM > 30 ? 'low' : 'medium' };
     }
     const oldRoad = this.currentRoad;
@@ -380,7 +400,11 @@ export class Tracker {
     const deltaSeconds = this.deltaValid && limitKmh ? this.elapsedSeconds - this.referenceSeconds : null;
     const exits = this.upcomingExits(road, match.alongM).map(({ exit: e, distanceM: distance, road: exitRoad, atM }) => {
         let reference = referenceTime(road, match.alongM, road.lengthM || roadLengthM(road));
-        if (exitRoad.id === road.id) reference = referenceTime(road, match.alongM, atM);
+        let referenceAssumed = referenceAssumedOn(road, match.alongM, road.lengthM || roadLengthM(road));
+        if (exitRoad.id === road.id) {
+          reference = referenceTime(road, match.alongM, atM);
+          referenceAssumed = referenceAssumedOn(road, match.alongM, atM);
+        }
         else {
           let cursor = road;
           const visited = new Set();
@@ -389,6 +413,7 @@ export class Tracker {
             const next = (cursor.nextRoadIds || []).map(id => this.byId.get(id)).find(r => this.connected(cursor, r));
             if (!next) { reference = null; break; }
             cursor = next;
+            referenceAssumed ||= referenceAssumedOn(cursor, 0, cursor.id === exitRoad.id ? atM : cursor.lengthM || roadLengthM(cursor));
             const part = referenceTime(cursor, 0, cursor.id === exitRoad.id ? atM : cursor.lengthM || roadLengthM(cursor));
             reference = part == null ? null : reference + part;
           }
@@ -396,12 +421,14 @@ export class Tracker {
         const projectedDeltaSeconds = deltaSeconds != null && speedMps > 1 && reference != null ?
           deltaSeconds + distance / speedMps - reference : null;
         return { name: e.name || e.label || 'Unnamed exit', number: e.number ?? null,
-          distanceM: distance, projectedDeltaSeconds, forecast: true };
+          distanceM: distance, projectedDeltaSeconds, forecast: true, referenceAssumed };
       });
     return this.state = {
       status: 'tracking', reason: inTunnel ? 'Tunnel: GPS confidence reduced' : null,
       confidence, road: { id: road.id, ref: road.ref || null, name: road.name || road.ref || '',
-        direction: road.travelDirection || road.direction || '', kind: 'expressway', isExpressway: true }, speedKmh, limitKmh, deltaSeconds,
+        direction: road.travelDirection || road.direction || '', kind: 'expressway', isExpressway: true },
+      speedKmh, limitKmh, limitAssumed: limitAssumedAt(road, match.alongM),
+      limitSource: limitAssumedAt(road, match.alongM) ? 'Assumed 50 km/h reference' : 'OSM maxspeed tag', deltaSeconds,
       elapsedSeconds: this.elapsedSeconds, exits, alongM: match.alongM,
       matchedDistanceM: match.distanceM, inTunnel
     };

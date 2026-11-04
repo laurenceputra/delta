@@ -34,7 +34,8 @@ def speed_kmh(value):
     if not value:
         return None
     m = re.fullmatch(r'\s*(\d+)\s*(?:km/h|kph)?\s*', value)
-    return int(m.group(1)) if m else None
+    speed = int(m.group(1)) if m else None
+    return speed if speed is not None and 0 < speed <= 90 else None
 
 
 def simplify(coords, tolerance_m=5):
@@ -143,7 +144,7 @@ def main():
             'license': 'ODbL-1.0', 'licenseUrl': 'https://opendatacommons.org/licenses/odbl/1-0/',
             'generatedAt': datetime.now(timezone.utc).isoformat(),
             'coordinateOrder': 'longitude,latitude',
-            'note': 'OSM map data is community mapped. Tagged speed limits are not independently verified against current legal limits. Unmapped limits and exits remain unknown.'
+            'note': 'OSM map data is community mapped. Tagged speed limits are not independently verified against current legal limits. Untagged or implausible speed limits use an assumed 50 km/h comparison reference in the app; this is not a verified legal limit. Unmapped exits remain unknown.'
         },
         'coverage': {ref: {'segments': counts[ref], 'speedTaggedSegments': known_speeds[ref], 'mappedExitAttachments': exit_counts[ref]} for ref in REFS},
         'chains': chains,

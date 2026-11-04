@@ -108,7 +108,8 @@ test('local layer contains motor roads and retains unknown names', () => {
 });
 
 test('local road reports its mapped name and GPS speed without expressway delta', () => {
-  const road = local.roads.find(r => r.name && r.highway === 'residential' && r.coordinates.length >= 2);
+  const road = local.roads.find(r => r.name && r.highway === 'residential' &&
+    r.speedLimit == null && r.coordinates.length >= 2);
   const tracker = new Tracker({ roads: [], localRoads: [road] });
   const point = sampleAt(road, 10);
   const fix = { ...point, speed: 12, accuracy: 5, timestamp: 1_800_000_000_000 };
@@ -118,7 +119,8 @@ test('local road reports its mapped name and GPS speed without expressway delta'
   assert.equal(state.road.name, road.name);
   assert.equal(state.speedKmh, 43.2);
   assert.equal(state.deltaSeconds, null);
-  assert.equal(state.limitKmh, null);
+  assert.equal(state.limitKmh, 50);
+  assert.equal(state.limitAssumed, true);
   assert.deepEqual(state.exits, []);
 });
 
@@ -141,5 +143,7 @@ test('real TPE ramp requires confirmed exit before showing local road without de
   assert.equal(localState.road.id, ramp.id);
   assert.equal(localState.speedKmh, 54);
   assert.equal(localState.deltaSeconds, null);
+  assert.equal(localState.limitKmh, ramp.speedLimit ?? 50);
+  assert.equal(localState.limitAssumed, ramp.speedLimit == null);
   assert.deepEqual(localState.exits, []);
 });
