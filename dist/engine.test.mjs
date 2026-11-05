@@ -407,3 +407,131 @@ test('confirmed local exit archives active session after six seconds', () => {
   assert.equal(done.completedSession.sessionId, live.sessionId);
   assert.equal(done.completedSession.status, 'completed-with-gap');
 });
+
+test('mapped leaving ramp archives delta at divergence before confirmation', () => {
+  const main = { ...road, id: 'main' };
+  const ramp = { id: 'ramp', name: 'Exit ramp', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9027, 1.35], [103.9037, 1.3495]] };
+  const local = { id: 'street', name: 'Street', coordinates: [[103.9037, 1.3495], [103.9047, 1.3495]] };
+  const graph = { source: 'exact directed OSM shared nodes', links: [{ id: 'ramp', nextLinkIds: [] }],
+    paths: [{ kind: 'leaving', fromRoadId: 'main', toRoadId: 'street', linkIds: ['ramp'],
+      startCoordinate: ramp.coordinates[0], endCoordinate: ramp.coordinates[1] }] };
+  const tracker = new Tracker({ roads: [main], rampGraph: graph }, { localRoads: [ramp, local] });
+  start(tracker, main, 150);
+  const live = tracker.update(at(main, 200, 2000));
+  const firstRamp = tracker.update(at(ramp, 30, 3000));
+  assert.equal(firstRamp.rampTransition.classification, 'leaving');
+  assert.equal(firstRamp.rampTransition.boundary.timing, 'estimated');
+  const confirmed = tracker.update(at(ramp, 80, 9000));
+  assert.equal(confirmed.status, 'local');
+  assert.ok(confirmed.completedSession.exitTime < epoch + 9000);
+  assert.equal(confirmed.completedSession.finalTimingStatus, 'estimated-boundary');
+  assert.notEqual(confirmed.completedSession.finalDeltaSeconds, live.deltaSeconds);
+});
+
+test('mapped transfer ramp does not archive session at six seconds', () => {
+  const a = { ...road, id: 'a', ref: 'ECP', routeNextRoadIds: [{ roadId: 'b', connectorIds: ['ramp'], lengthM: 111 }] };
+  const b = { ...road, id: 'b', ref: 'KPE', coordinates: [[103.911, 1.35], [103.921, 1.35]] };
+  const ramp = { id: 'ramp', highway: 'motorway_link', coordinates: [[103.91, 1.35], [103.911, 1.35]],
+    speedLimit: 70, lengthM: 111 };
+  const graph = { source: 'exact directed OSM shared nodes', links: [{ id: 'ramp', nextLinkIds: [] }],
+    paths: [{ kind: 'transfer', fromRoadId: 'a', toRoadId: 'b', linkIds: ['ramp'],
+      startCoordinate: ramp.coordinates[0], endCoordinate: ramp.coordinates[1] }] };
+  const tracker = new Tracker({ roads: [a, b], connectors: [ramp], rampGraph: graph });
+  const live = start(tracker, a, 900);
+  const onRamp = tracker.update(at(ramp, 30, 3000));
+  assert.equal(onRamp.rampTransition.classification, 'transfer');
+  assert.equal(onRamp.sessionId, live.sessionId);
+  const later = tracker.update(at(ramp, 80, 9000));
+  assert.equal(later.completedSession, null);
+  assert.equal(later.sessionId, live.sessionId);
+});
+
+test('mapped joining ramp estimates entry before first mainline fix', () => {
+  const local = { id: 'street', name: 'Street', coordinates: [[103.899, 1.349], [103.9, 1.349]] };
+  const ramp = { id: 'join', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9, 1.349], [103.901, 1.35]] };
+  const main = { ...road, id: 'main', coordinates: [[103.901, 1.35], [103.911, 1.35]] };
+  const graph = { source: 'exact directed OSM shared nodes', links: [{ id: 'join', nextLinkIds: [] }],
+    paths: [{ kind: 'joining', fromRoadId: 'street', toRoadId: 'main', linkIds: ['join'],
+      startCoordinate: ramp.coordinates[0], endCoordinate: ramp.coordinates[1] }] };
+  const tracker = new Tracker({ roads: [main], rampGraph: graph }, { localRoads: [local, ramp] });
+  tracker.update(at(local, 50, 0));
+  tracker.update(at(local, 50, 1000));
+  tracker.update(at(ramp, 30, 2000));
+  const rampState = tracker.update(at(ramp, roadLengthM(ramp) - 30, 8000));
+  assert.equal(rampState.rampTransition.classification, 'joining');
+  const joined = tracker.update(at(main, 40, 9000));
+  assert.equal(joined.status, 'tracking');
+  assert.equal(joined.entrySource, 'mapped-ramp-boundary-estimate');
+  assert.ok(joined.entryTime > epoch + 8000 && joined.entryTime < epoch + 9000);
+  assert.equal(joined.rampTransition, null);
+});
+
+test('ambiguous ramp outcomes remain unknown and do not force an exit', () => {
+  const main = { ...road, id: 'main' };
+  const ramp = { id: 'ramp', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9027, 1.35], [103.9037, 1.3495]] };
+  const graph = { links: [{ id: 'ramp', nextLinkIds: [] }], paths: [
+    { kind: 'leaving', fromRoadId: 'main', toRoadId: 'local-a', linkIds: ['ramp'], startCoordinate: ramp.coordinates[0] },
+    { kind: 'transfer', fromRoadId: 'main', toRoadId: 'other-main', linkIds: ['ramp'], startCoordinate: ramp.coordinates[0] }
+  ] };
+  const tracker = new Tracker({ roads: [main], rampGraph: graph }, { localRoads: [ramp] });
+  start(tracker, main, 200);
+  const first = tracker.update(at(ramp, 30, 2000));
+  assert.equal(first.rampTransition.classification, 'unknown');
+  const later = tracker.update(at(ramp, 80, 9000));
+  assert.equal(later.completedSession, null);
+  assert.equal(later.rampTransition.pathCount, 2);
+});
+
+test('multi-link ramp keeps one transition across connected segments', () => {
+  const main = { ...road, id: 'main' };
+  const a = { id: 'a', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9027, 1.35], [103.9032, 1.3498]] };
+  const b = { id: 'b', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9032, 1.3498], [103.9037, 1.3495]] };
+  const graph = { links: [{ id: 'a', nextLinkIds: ['b'] }, { id: 'b', nextLinkIds: [] }],
+    paths: [{ kind: 'leaving', fromRoadId: 'main', toRoadId: 'local', linkIds: ['a', 'b'],
+      startCoordinate: a.coordinates[0], endCoordinate: b.coordinates[1] }] };
+  const tracker = new Tracker({ roads: [main], rampGraph: graph }, { localRoads: [a, b] });
+  start(tracker, main, 200);
+  const first = tracker.update(at(a, 20, 2000));
+  const next = tracker.update(at(b, 20, 5000));
+  assert.equal(first.rampTransition.classification, 'leaving');
+  assert.equal(next.rampTransition.classification, 'leaving');
+  assert.equal(next.completedSession, null);
+  assert.equal(tracker.recoveryCandidate.time, epoch + 2000);
+});
+
+test('same-reference transfer remains active and does not archive on ramp', () => {
+  const a = { ...road, id: 'a', ref: 'PIE', routeNextRoadIds: [{ roadId: 'b', connectorIds: ['r'], lengthM: 111 }] };
+  const b = { ...road, id: 'b', ref: 'PIE', coordinates: [[103.911, 1.35], [103.921, 1.35]] };
+  const ramp = { id: 'r', highway: 'motorway_link', coordinates: [[103.91, 1.35], [103.911, 1.35]], lengthM: 111 };
+  const graph = { links: [{ id: 'r', nextLinkIds: [] }], paths: [
+    { kind: 'transfer', fromRoadId: 'a', toRoadId: 'b', linkIds: ['r'],
+      startCoordinate: ramp.coordinates[0], endCoordinate: ramp.coordinates[1] }] };
+  const tracker = new Tracker({ roads: [a, b], connectors: [ramp], rampGraph: graph });
+  const started = start(tracker, a, 900);
+  const onRamp = tracker.update(at(ramp, 30, 3000));
+  assert.equal(onRamp.rampTransition.classification, 'transfer');
+  const destination = tracker.update(at(b, 30, 5000));
+  assert.equal(destination.sessionId, started.sessionId);
+  assert.equal(destination.completedSession, null);
+});
+
+test('exit boundary estimate is withheld for long or inaccurate brackets', () => {
+  const main = { ...road, id: 'main' };
+  const ramp = { id: 'ramp', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9027, 1.35], [103.9037, 1.3495]] };
+  const graph = { links: [{ id: 'ramp', nextLinkIds: [] }], paths: [
+    { kind: 'leaving', fromRoadId: 'main', toRoadId: 'street', linkIds: ['ramp'],
+      startCoordinate: ramp.coordinates[0], endCoordinate: ramp.coordinates[1] }] };
+  for (const [gap, priorAccuracy] of [[7000, 5], [1000, 40]]) {
+    const tracker = new Tracker({ roads: [main], rampGraph: graph }, { localRoads: [ramp] });
+    start(tracker, main, 150);
+    tracker.update({ ...at(main, 200, 2000), accuracy: priorAccuracy });
+    const state = tracker.update(at(ramp, 30, 2000 + gap));
+    assert.notEqual(state.rampTransition?.boundary?.timing, 'estimated');
+  }
+});

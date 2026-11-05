@@ -9,6 +9,23 @@ const layered = { ...bundle, localRoads: local };
 const byId = new Map(bundle.roads.map(road => [road.id, road]));
 const refs = ['AYE', 'BKE', 'CTE', 'ECP', 'KJE', 'KPE', 'MCE', 'PIE', 'SLE', 'TPE'];
 
+test('bundled ramp graph contains real joining, leaving, and multi-link transfer paths', () => {
+  const cases = [
+    ['joining', 'osm-way-996698202', 'osm-way-174552486', ['osm-way-22674815', 'osm-way-480919517', 'osm-way-480919516', 'osm-way-121882988']],
+    ['leaving', 'osm-way-756847962', 'osm-way-628738331', ['osm-way-139718132']],
+    ['transfer', 'osm-way-670121242', 'osm-way-633601611', ['osm-way-32605139', 'osm-way-140562826', 'osm-way-528189241']],
+  ];
+  const links = new Map(bundle.rampGraph.links.map(link => [link.id, link]));
+  for (const [kind, fromRoadId, toRoadId, linkIds] of cases) {
+    const path = bundle.rampGraph.paths.find(path => path.kind === kind && path.fromRoadId === fromRoadId && path.toRoadId === toRoadId && linkIds.every((id, i) => path.linkIds[i] === id));
+    assert.ok(path, `${kind} ${fromRoadId} -> ${toRoadId}`);
+    assert.ok(path.lengthM > 0);
+    assert.ok(linkIds.every(id => links.has(id)), `${kind} has a missing link`);
+    assert.ok(byId.has(kind === 'joining' ? toRoadId : fromRoadId));
+    if (kind === 'transfer') assert.ok(byId.has(toRoadId));
+  }
+});
+
 test('bundled geometry covers all ten expressway references with valid connected segments', () => {
   assert.deepEqual([...new Set(bundle.roads.map(road => road.ref))].sort(), refs);
   for (const road of bundle.roads) {
@@ -124,7 +141,7 @@ test('local road reports its mapped name and GPS speed without expressway delta'
   assert.deepEqual(state.exits, []);
 });
 
-test('real TPE ramp requires confirmed exit before showing local road without delta', () => {
+test('unproven TPE ramp does not force a completed expressway exit', () => {
   const mainline = byId.get('osm-way-62272687');
   const ramp = local.roads.find(road => road.id === 'osm-way-32790032');
   assert.ok(mainline.exits.some(exit => exit.id === ramp.id));
@@ -143,12 +160,11 @@ test('real TPE ramp requires confirmed exit before showing local road without de
   assert.equal(stillExiting.status, 'exiting');
   assert.equal(stillExiting.road.id, mainline.id);
   assert.equal(stillExiting.deltaSeconds, null);
-  assert.equal(localState.status, 'local');
-  assert.equal(localState.road.id, ramp.id);
-  assert.equal(localState.speedKmh, 54);
+  assert.equal(localState.status, 'exiting');
+  assert.equal(localState.road.id, mainline.id);
+  assert.equal(localState.rampTransition, null);
   assert.equal(localState.deltaSeconds, null);
-  assert.equal(localState.limitKmh, ramp.speedLimit ?? 50);
-  assert.equal(localState.limitAssumed, ramp.speedLimit == null);
+  assert.equal(localState.completedSession, null);
   assert.deepEqual(localState.exits, []);
 });
 
@@ -570,7 +586,7 @@ test('two CTE outages reconstruct once each from the original entry anchor', () 
   assert.ok(Math.abs(second.deltaSeconds - (43 - 750 / (50 / 3.6))) < .05);
 });
 
-test('confirmed six-second expressway exit archives its session summary', () => {
+test('unproven ramp candidate preserves session despite six-second hold', () => {
   const mainline = byId.get('osm-way-62272687');
   const ramp = local.roads.find(road => road.id === 'osm-way-32790032');
   const tracker = new Tracker({ roads: [mainline], localRoads: [ramp] });
@@ -583,13 +599,88 @@ test('confirmed six-second expressway exit archives its session summary', () => 
   assert.equal(candidate.deltaStatus, 'recovering');
   assert.equal(candidate.completedSession, null);
   const completed = tracker.update(fix(ramp, .9, 8000));
-  assert.equal(completed.status, 'local');
+  assert.equal(completed.status, 'exiting');
   assert.equal(completed.deltaSeconds, null);
-  assert.equal(completed.deltaStatus, 'not-started');
-  assert.equal(completed.entryTime, null);
-  assert.equal(completed.completedSession.entryTime, live.entryTime);
-  assert.equal(completed.completedSession.lastValidDeltaSeconds, live.deltaSeconds);
-  assert.equal(completed.completedSession.exitTime, base + 8000);
+  assert.equal(completed.entryTime, live.entryTime);
+  assert.equal(completed.completedSession, null);
+  assert.equal(completed.rampTransition, null);
+});
+
+test('mapped TPE exit archives the ramp divergence time before six-second confirmation', () => {
+  const mainline = byId.get('osm-way-756847962');
+  const ramp = local.roads.find(road => road.id === 'osm-way-139718132');
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  const at = (road, fraction, ms) => tracker.update({
+    ...sampleAt(road, roadLengthM(road) * fraction), accuracy: 5, speed: 15, timestamp: base + ms,
+  });
+  at(mainline, .2, 0);
+  const live = at(mainline, .7, 1000);
+  const leaving = at(ramp, .2, 2000);
+  assert.equal(leaving.rampTransition.classification, 'leaving');
+  assert.equal(leaving.rampTransition.boundary.timing, 'estimated');
+  assert.equal(leaving.completedSession, null);
+  at(ramp, .7, 3000);
+  const localState = at(ramp, .9, 9000);
+  assert.equal(localState.status, 'local');
+  assert.equal(localState.completedSession.entryTime, live.entryTime);
+  assert.equal(localState.completedSession.finalTimingStatus, 'estimated-boundary');
+  assert.equal(localState.completedSession.exitTime, leaving.rampTransition.boundary.estimatedTime);
+  assert.ok(localState.completedSession.exitTime < base + 2000);
+  assert.ok(localState.completedSession.confirmationTime - localState.completedSession.exitTime > 6000);
+});
+
+test('real ECP to KPE three-link ramp transfer retains one expressway session', () => {
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  let ms = 0;
+  const at = (id, fraction) => {
+    const road = byId.get(id) || local.roads.find(road => road.id === id);
+    return tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+      accuracy: 5, speed: 15, timestamp: base + (ms += 2000) });
+  };
+  at('osm-way-670121242', .2);
+  const ecp = at('osm-way-670121242', .7);
+  assert.equal(ecp.status, 'tracking');
+  for (const id of ['osm-way-32605139', 'osm-way-140562826', 'osm-way-528189241']) {
+    const ramp = at(id, .2);
+    assert.equal(ramp.rampTransition.classification, 'transfer', id);
+    assert.equal(ramp.rampTransition.pathCount, 1, id);
+    assert.equal(ramp.status, 'tracking', id);
+    assert.equal(ramp.entryTime, ecp.entryTime, id);
+    assert.equal(ramp.completedSession, null, id);
+  }
+  const kpe = at('osm-way-633601611', .1);
+  assert.equal(kpe.status, 'tracking');
+  assert.equal(kpe.entryTime, ecp.entryTime);
+  assert.equal(kpe.rampTransition, null);
+  assert.equal(kpe.completedSession, null);
+});
+
+test('real Upper Cross joining ramp starts CTE timing at the mainline boundary', () => {
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  let ms = 0;
+  const at = (id, distance) => {
+    const road = byId.get(id) || local.roads.find(road => road.id === id);
+    return tracker.update({ ...sampleAt(road, Math.min(distance, roadLengthM(road) - 1)),
+      accuracy: 5, speed: 15, timestamp: base + (ms += 2000) });
+  };
+  at('osm-way-996698202', 70);
+  for (const id of ['osm-way-22674815', 'osm-way-480919517', 'osm-way-480919516']) at(id, 20);
+  at('osm-way-121882988', 20);
+  const ramp = at('osm-way-121882988', 80);
+  assert.equal(ramp.rampTransition.classification, 'joining');
+  assert.equal(ramp.entryTime, null);
+  assert.equal(ramp.deltaSeconds, null);
+  const cte = at('osm-way-174552486', 4);
+  assert.equal(cte.status, 'tracking');
+  assert.ok(cte.entryTime >= base + 12_000 && cte.entryTime <= base + 14_000);
+  assert.equal(cte.rampTransition, null);
+  const successor = at('osm-way-121882983', 30);
+  assert.equal(successor.status, 'tracking');
+  assert.equal(successor.entryTime, cte.entryTime);
+  assert.equal(successor.rampTransition, null);
 });
 
 test('unresolved fork candidate can later recover on a unique true road', () => {

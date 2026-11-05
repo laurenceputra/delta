@@ -113,7 +113,17 @@ def main():
     all_starts = defaultdict(list)
     for road, way in zip(roads, mainline):
         all_starts[way['nodes'][0]].append(road)
-    links = [w for w in ways if w['tags'].get('highway') == 'motorway_link' and len(w.get('geometry', [])) > 1]
+    links = []
+    for way in ways:
+        if way['tags'].get('highway') != 'motorway_link' or len(way.get('geometry', [])) < 2:
+            continue
+        if way['tags'].get('oneway') == '-1':
+            links.append({**way, 'nodes': way['nodes'][::-1], 'geometry': way['geometry'][::-1]})
+        else:
+            links.append(way)
+        if way['tags'].get('oneway') == 'no':
+            links.append({**way, 'id': f"{way['id']}-reverse", 'nodes': way['nodes'][::-1],
+                          'geometry': way['geometry'][::-1]})
     link_starts = defaultdict(list)
     connectors = []
     for link in links:
@@ -227,13 +237,13 @@ def main():
     }
     path = Path('dist/data/roads.json')
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out, separators=(',', ':')))
     # Keep the mainline bundle stable; nearby road identification uses this separate file.
     local_classes = {'motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link',
                      'secondary', 'secondary_link', 'tertiary', 'tertiary_link',
                      'residential', 'unclassified', 'living_street', 'service'}
     mainline_ids = {w['id'] for w in mainline}
     local = []
+    local_source = []
     for w in ways:
         t = w['tags']
         if w['id'] in mainline_ids or t.get('highway') not in local_classes or len(w.get('geometry', [])) < 2:
@@ -249,6 +259,88 @@ def main():
                       'speedLimit': speed_kmh(t.get('maxspeed')),
                       'oneway': oneway, 'expressway': False,
                       'destination': t.get('destination') or t.get('destination:street')})
+        local_source.append(w)
+    local_ends = defaultdict(list)
+    local_starts = defaultdict(list)
+    for w in local_source:
+        if w['tags'].get('highway') == 'motorway_link':
+            continue
+        nodes = w['nodes'][::-1] if w['tags'].get('oneway') == '-1' else w['nodes']
+        local_ends[nodes[-1]].append(f"osm-way-{w['id']}")
+        local_starts[nodes[0]].append(f"osm-way-{w['id']}")
+        t = w['tags']
+        oneway = t.get('oneway') in {'yes', '1', 'true', '-1'} or (t.get('oneway') != 'no' and (t.get('junction') == 'roundabout' or t.get('highway') in {'motorway', 'motorway_link'}) )
+        if not oneway:
+            local_ends[nodes[0]].append(f"osm-way-{w['id']}")
+            local_starts[nodes[-1]].append(f"osm-way-{w['id']}")
+    link_meta = []
+    for link in links:
+        start_node, end_node = link['nodes'][0], link['nodes'][-1]
+        from_mainline = sorted({r['id'] for r, i, w in by_node.get(start_node, []) if i > 0})
+        to_mainline = sorted({r['id'] for r, i, w in by_node.get(end_node, []) if i < len(w['nodes']) - 1})
+        link_meta.append({
+            'id': f"osm-way-{link['id']}", 'startNodeId': start_node, 'endNodeId': end_node,
+            'startCoordinate': [link['geometry'][0]['lon'], link['geometry'][0]['lat']],
+            'endCoordinate': [link['geometry'][-1]['lon'], link['geometry'][-1]['lat']],
+            'nextLinkIds': [c['id'] for c in link_starts.get(end_node, []) if c['id'] != f"osm-way-{link['id']}"],
+            'fromMainlineRoadIds': from_mainline, 'toMainlineRoadIds': to_mainline,
+            'fromLocalRoadIds': sorted(set(local_ends.get(start_node, []))),
+            'toLocalRoadIds': sorted(set(local_starts.get(end_node, [])))
+        })
+    out['rampGraph'] = {'source': 'exact directed OSM shared nodes', 'maxPathLengthM': 5000,
+                        'maxPathLinks': 64, 'links': link_meta}
+    meta_by_id = {m['id']: m for m in link_meta}
+    connector_by_id = {c['id']: c for c in connectors}
+    paths = []
+    path_seen = set()
+    truncated_searches = 0
+    unresolved_ends = 0
+    for first in link_meta:
+        origins = [('mainline', rid) for rid in first['fromMainlineRoadIds']]
+        origins += [('local', rid) for rid in first['fromLocalRoadIds']]
+        if not origins:
+            continue
+        frontier = [(first['id'], [first['id']], connector_by_id[first['id']]['lengthM'])]
+        while frontier:
+            current_id, chain, length = frontier.pop()
+            current = meta_by_id[current_id]
+            if length > 5000 or len(chain) > 64:
+                truncated_searches += 1
+                continue
+            destinations = [('mainline', rid) for rid in current['toMainlineRoadIds']]
+            destinations += [('local', rid) for rid in current['toLocalRoadIds']]
+            for origin_kind, origin_id in origins:
+                for dest_kind, dest_id in destinations:
+                    if origin_kind == 'local' and dest_kind == 'mainline':
+                        kind = 'joining'
+                    elif origin_kind == 'mainline' and dest_kind == 'local':
+                        kind = 'leaving'
+                    elif origin_kind == 'mainline' and dest_kind == 'mainline':
+                        kind = 'transfer'
+                    else:
+                        continue
+                    key = (kind, origin_id, dest_id, tuple(chain))
+                    if key in path_seen:
+                        continue
+                    path_seen.add(key)
+                    paths.append({'kind': kind, 'fromRoadId': origin_id, 'toRoadId': dest_id,
+                                  'linkIds': chain, 'lengthM': round(length, 1),
+                                  'startCoordinate': first['startCoordinate'],
+                                  'endCoordinate': current['endCoordinate']})
+            # A mainline attachment ends this ramp path; further travel follows
+            # the mainline graph instead of continuing through another ramp.
+            if current['toMainlineRoadIds']:
+                continue
+            if not current['nextLinkIds'] and not current['toLocalRoadIds']:
+                unresolved_ends += 1
+            if len(chain) < 64:
+                for next_id in current['nextLinkIds']:
+                    if next_id not in chain:
+                        frontier.append((next_id, chain + [next_id], length + connector_by_id[next_id]['lengthM']))
+    out['rampGraph']['paths'] = paths
+    out['rampGraph']['truncatedSearchCount'] = truncated_searches
+    out['rampGraph']['unresolvedEndCount'] = unresolved_ends
+    path.write_text(json.dumps(out, separators=(',', ':')))
     local_path = Path('dist/data/local-roads.json')
     local_path.write_text(json.dumps({'metadata': out['metadata'], 'roads': local}, separators=(',', ':')))
     Path(str(local_path) + '.gz').write_bytes(gzip.compress(local_path.read_bytes(), compresslevel=9, mtime=0))
