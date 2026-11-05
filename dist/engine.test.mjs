@@ -63,11 +63,9 @@ test('bad fix and long GPS gap invalidate accumulated delta', () => {
   assert.ok(tracker.update(at(road, 150, 6000)).deltaSeconds !== 0);
   assert.equal(tracker.update({ ...at(road, 160, 7000), accuracy: 200 }).status, 'stale');
   const reacquired = tracker.update(at(road, 170, 8000));
-  assert.equal(reacquired.status, 'tracking');
+  assert.equal(reacquired.status, 'identifying');
   assert.equal(reacquired.deltaSeconds, null);
-  assert.equal(reacquired.timingBasis, 'since reacquisition');
-  assert.ok(Number.isFinite(tracker.update(at(road, 180, 9000)).deltaSeconds));
-  const resumed = tracker.update(at(road, 180, 30000));
+  const resumed = tracker.update(at(road, 180, 9000));
   assert.ok(Number.isFinite(resumed.deltaSeconds));
   assert.equal(resumed.timingBasis, 'since detection');
 });
@@ -190,11 +188,12 @@ test('six second road switch retains confirmed label and suppresses forecasts', 
   assert.equal(first.deltaSeconds, null);
   assert.deepEqual(first.exits, []);
   const bounce = tracker.update(at(road, 100, 3000));
-  assert.equal(bounce.status, 'tracking');
+  assert.equal(bounce.status, 'identifying');
   assert.equal(bounce.deltaSeconds, null);
-  tracker.update(at(local, 100, 4000));
-  assert.equal(tracker.update(at(local, 100, 9000)).status, 'exiting');
-  assert.equal(tracker.update(at(local, 100, 10000)).status, 'local');
+  assert.equal(tracker.update(at(road, 100, 4000)).status, 'tracking');
+  tracker.update(at(local, 100, 5000));
+  assert.equal(tracker.update(at(local, 100, 10000)).status, 'exiting');
+  assert.equal(tracker.update(at(local, 100, 11000)).status, 'local');
 });
 
 test('stale GPS preserves last road and entry history without live readings', () => {
@@ -233,7 +232,9 @@ test('long tunnel gap reconstructs unique same-chain route and original session'
   const gap = tracker.invalidate('Tunnel signal lost');
   assert.equal(gap.deltaSeconds, null);
   assert.equal(gap.speedKmh, null);
-  const after = tracker.update(at(c, 300, 160000));
+  const recovering = tracker.update(at(c, 300, 160000));
+  assert.equal(recovering.deltaSeconds, null);
+  const after = tracker.update(at(c, 320, 161000));
   assert.equal(after.status, 'tracking');
   assert.equal(after.entryTime, entry);
   assert.equal(after.timingBasis, 'since detection');
@@ -252,7 +253,7 @@ test('branching tunnel path refuses full-session reconstruction', () => {
   tracker.invalidate('Tunnel signal lost');
   const state = tracker.update(at(d, 100, 60000));
   assert.equal(state.deltaSeconds, null);
-  assert.notEqual(state.timingBasis, 'since detection');
+  assert.equal(state.deltaStatus, 'unresolved');
 });
 
 test('piecewise limits and assumed history survive a mapped limit change', () => {
@@ -261,7 +262,7 @@ test('piecewise limits and assumed history survive a mapped limit change', () =>
     { fromM: 500, toM: 700, limitKmh: null },
     { fromM: 700, toM: 1100, limitKmh: 80 }
   ] };
-  const tracker = new Tracker({ roads: [zoned] });
+  const tracker = new Tracker({ roads: [zoned] }, { maxGapMs: 30000 });
   start(tracker, zoned, 200);
   const crossing = tracker.update(at(zoned, 600, 21000, 20));
   assert.equal(crossing.limitKmh, 50);
@@ -280,7 +281,7 @@ test('verified cross-reference connector continues timing without switch hold', 
   const connector = { id: 'link', coordinates: [[103.91, 1.35], [103.911, 1.35]], speedLimit: 70, lengthM: 111 };
   const kpe = { ...road, id: 'kpe', ref: 'KPE', coordinates: [[103.911, 1.35], [103.921, 1.35]],
     speedLimit: 80, nextRoadIds: [] };
-  const tracker = new Tracker({ roads: [mce, kpe], connectors: [connector] });
+  const tracker = new Tracker({ roads: [mce, kpe], connectors: [connector] }, { maxGapMs: 30000 });
   start(tracker, mce, 900);
   const after = tracker.update(at(kpe, 100, 16000));
   assert.equal(after.status, 'tracking');
@@ -321,7 +322,9 @@ test('one credible mainline fix survives a tunnel outage and anchors recovered s
   assert.equal(stale.speedKmh, null);
   assert.equal(stale.deltaSeconds, null);
   assert.deepEqual(stale.exits, []);
-  const recovered = tracker.update(at(b, 100, 30000));
+  const firstReturn = tracker.update(at(b, 100, 30000));
+  assert.equal(firstReturn.deltaSeconds, null);
+  const recovered = tracker.update(at(b, 120, 31000));
   assert.equal(recovered.status, 'tracking');
   assert.equal(recovered.entryTime, epoch);
   assert.equal(recovered.reconstructionStatus, 'reconstructed');
@@ -353,7 +356,7 @@ test('provisional fork cannot invent a full-session delta', () => {
   const state = tracker.update(at(d, 100, 60000));
   assert.equal(state.deltaSeconds, null);
   assert.equal(state.reconstructionStatus, 'unresolved');
-  assert.equal(tracker.provisional, null);
+  assert.ok(tracker.provisional);
 });
 
 test('unreliable first fix cannot create provisional entry', () => {
@@ -364,4 +367,43 @@ test('unreliable first fix cannot create provisional entry', () => {
   const stale = tracker.invalidate('GPS unavailable');
   assert.equal(stale.status, 'stale');
   assert.equal(stale.entryTime, null);
+});
+
+test('held session survives repeat errors and recovers once from committed anchor', () => {
+  const tracker = new Tracker({ roads: [road] });
+  start(tracker, road, 100);
+  const live = tracker.update(at(road, 150, 2000));
+  const sessionId = live.sessionId;
+  const held = tracker.invalidate('GPS lost');
+  assert.equal(held.deltaStatus, 'held');
+  assert.equal(held.lastValidDeltaSeconds, live.deltaSeconds);
+  assert.equal(held.gapStart, epoch + 2000);
+  assert.equal(held.speedKmh, null);
+  assert.equal(held.lastKnownLimitKmh, 90);
+  assert.equal(held.heldExits.length, 3);
+  const secondError = tracker.invalidate('Still no GPS');
+  assert.equal(secondError.gapStart, held.gapStart);
+  const first = tracker.update(at(road, 300, 10000));
+  assert.equal(first.deltaStatus, 'recovering');
+  assert.equal(first.deltaSeconds, null);
+  assert.equal(tracker.update(at(road, 300, 10000)).acceptedFix, false);
+  const restored = tracker.update(at(road, 320, 11000));
+  assert.equal(restored.deltaStatus, 'live');
+  assert.equal(restored.sessionId, sessionId);
+  assert.ok(Math.abs(restored.deltaSeconds - (11 - 220 / 25)) < 0.2);
+  assert.equal(restored.reconstructionStatus, 'reconstructed');
+});
+
+test('confirmed local exit archives active session after six seconds', () => {
+  const local = { id: 'street', name: 'Street', coordinates: [[103.9, 1.349], [103.91, 1.349]] };
+  const tracker = new Tracker({ roads: [road], localRoads: [local] });
+  const live = start(tracker, road);
+  tracker.update(at(local, 100, 2000));
+  const exiting = tracker.update(at(local, 100, 7000));
+  assert.equal(exiting.deltaSeconds, null);
+  const done = tracker.update(at(local, 100, 8000));
+  assert.equal(done.status, 'local');
+  assert.equal(done.sessionId, null);
+  assert.equal(done.completedSession.sessionId, live.sessionId);
+  assert.equal(done.completedSession.status, 'completed-with-gap');
 });

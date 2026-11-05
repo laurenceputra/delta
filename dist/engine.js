@@ -148,7 +148,10 @@ function empty(status, reason = null) {
     entryTime: null, entrySource: null, entryConfidence: null, entryUncertaintyMs: null,
     timingBasis: null, elapsedClockSeconds: null, candidateRoad: null,
     limitUncertain: false, cumulativeReferenceAssumed: false, reconstructionStatus: 'none',
-    provisional: false };
+    provisional: false, deltaStatus: 'not-started', lastValidDeltaSeconds: null,
+    lastValidDeltaAt: null, gapStart: null, sessionId: null, heldExits: [],
+    lastKnownLimitKmh: null, lastKnownLimitAssumed: false, completedSession: null,
+    acceptedFix: false, lastAcceptedFixAt: null };
 }
 
 export class Tracker {
@@ -230,32 +233,63 @@ export class Tracker {
     this.cumulativeReferenceAssumed = false;
     this.reconstructionStatus = 'none';
     this.provisional = null;
+    this.sessionId = null;
+    this.nextSessionId = (this.nextSessionId || 0) + 1;
+    this.lastValidDeltaSeconds = null;
+    this.lastValidDeltaAt = null;
+    this.lastLiveState = null;
+    this.committed = null;
+    this.recoveryCandidate = null;
+    this.gapStart = null;
+    this.gapSequence = 0;
+    this.appliedGaps = new Set();
+    this.completedSession = null;
+    this.lastAcceptedFixAt = null;
     this.state = empty('searching');
     return this.state;
   }
 
   invalidate(reason = 'GPS fix stale', preserveContext = true) {
     if (!preserveContext) this.reset();
-    if (preserveContext && this.confirmed && this.currentRoad && this.previous && this.byId.has(this.currentRoad.id))
-      this.gapAnchor = { road: this.currentRoad, fix: this.previous };
-    this.previous = null;
-    this.deltaValid = false;
-    this.reacquiring = true;
-    this.reconstructionStatus = 'pending';
-    this.pending = null;
-    this.sessionStartMs = null;
-    const provisional = preserveContext ? this.provisional : null;
-    const provisionalRoad = provisional && (!this.currentRoad || !this.byId.has(this.currentRoad.id));
-    return this.state = { ...empty(provisionalRoad ? 'entering' : 'stale',
-      provisionalRoad ? 'Pending confirmation: GPS unavailable' : reason),
-      road: preserveContext ? this.state.road : null,
+    this.beginGap();
+    return this.heldState(this.provisional && !this.confirmed ? 'entering' : 'stale', reason);
+  }
+
+  beginGap() {
+    if (!this.gapAnchor) {
+      const anchor = this.committed || (this.provisional ? {
+        road: this.provisional.road, fix: this.provisional.fix,
+        elapsed: 0, reference: 0, assumed: false, provisional: true } : null);
+      if (anchor) {
+        this.gapAnchor = { ...anchor, id: ++this.gapSequence };
+        this.gapStart = anchor.fix.time;
+      }
+    }
+    this.recoveryCandidate = null;
+    this.reconstructionStatus = this.gapAnchor ? 'pending' : this.reconstructionStatus;
+  }
+
+  heldState(status, reason, speedKmh = null, candidateRoad = null, time = Date.now(), acceptedFix = false) {
+    const prior = this.lastLiveState;
+    return this.state = { ...empty(status, reason),
+      road: prior?.road || this.state.road,
+      candidateRoad, speedKmh,
       entryTime: this.entryTime, entrySource: this.entrySource,
       entryConfidence: this.entryConfidence, entryUncertaintyMs: this.entryUncertaintyMs,
-      elapsedSeconds: this.entryTime == null ? null : Math.max(0, (Date.now() - this.entryTime) / 1000),
-      elapsedClockSeconds: this.entryTime == null ? null : Math.max(0, (Date.now() - this.entryTime) / 1000),
+      elapsedClockSeconds: this.entryTime == null ? null : Math.max(0, (time - this.entryTime) / 1000),
+      elapsedSeconds: this.entryTime == null ? null : Math.max(0, (time - this.entryTime) / 1000),
       timingBasis: this.entryTime == null ? null : 'since detection',
-      fullSessionAvailable: false, cumulativeReferenceAssumed: this.cumulativeReferenceAssumed,
-      reconstructionStatus: this.reconstructionStatus, provisional: !!provisional };
+      provisional: !!this.provisional, reconstructionStatus: this.reconstructionStatus,
+      deltaStatus: this.gapAnchor ? this.reconstructionStatus === 'unresolved' ? 'unresolved' :
+        this.recoveryCandidate ? 'recovering' : 'held' : 'not-started',
+      lastValidDeltaSeconds: this.lastValidDeltaSeconds, lastValidDeltaAt: this.lastValidDeltaAt,
+      gapStart: this.gapStart, sessionId: this.sessionId,
+      heldExits: (prior?.exits || []).map(e => ({ name: e.name, number: e.number, distanceM: e.distanceM })),
+      lastKnownLimitKmh: prior?.limitKmh ?? null,
+      lastKnownLimitAssumed: prior?.limitAssumed ?? false,
+      cumulativeReferenceAssumed: this.cumulativeReferenceAssumed,
+      completedSession: this.completedSession,
+      acceptedFix, lastAcceptedFixAt: this.lastAcceptedFixAt };
   }
 
   connected(from, to) {
@@ -396,17 +430,13 @@ export class Tracker {
         !Number.isFinite(accuracy) || accuracy < 0 || accuracy > this.options.maxAccuracyM) {
       return this.invalidate('GPS accuracy or position unavailable');
     }
-    if (this.lastTime != null && time <= this.lastTime) return this.invalidate('Out-of-order GPS fix');
+    if (this.lastTime != null && time <= this.lastTime)
+      return this.state = { ...this.state, acceptedFix: false, lastAcceptedFixAt: this.lastAcceptedFixAt };
     if (this.lastTime != null && time - this.lastTime > this.options.maxGapMs) {
-      if (this.confirmed && this.currentRoad && this.previous && this.byId.has(this.currentRoad.id))
-        this.gapAnchor = { road: this.currentRoad, fix: this.previous };
-      this.previous = null;
-      this.deltaValid = false;
-      this.sessionStartMs = null;
-      this.reacquiring = true;
-      this.reconstructionStatus = 'pending';
+      this.beginGap();
     }
     this.lastTime = time;
+    this.lastAcceptedFixAt = Date.now();
     this.history.push({ time, point: [latitude, longitude], accuracy, heading: fix.heading, speed: fix.speed });
     this.history = this.history.filter(h => time - h.time <= 30000);
 
@@ -430,14 +460,9 @@ export class Tracker {
       }).sort((a, b) => a.score - b.score);
     const selected = candidates[0];
     if (!selected || (headingUseful && selected.turn > 105)) {
-      this.previous = null;
-      this.deltaValid = false;
-      this.sessionStartMs = null;
+      this.beginGap();
       this.pending = null;
-      return this.state = { ...empty('identifying', 'No reliable road match'), speedKmh,
-        road: this.confirmed ? this.state.road : null, entryTime: this.entryTime,
-        entrySource: this.entrySource, entryConfidence: this.entryConfidence,
-        entryUncertaintyMs: this.entryUncertaintyMs };
+      return this.heldState('identifying', 'No reliable road match', speedKmh, null, time, true);
     }
 
     const selectedMainline = this.byId.has(selected.road.id);
@@ -445,14 +470,9 @@ export class Tracker {
       Math.abs(c.match.distanceM - selected.match.distanceM) < Math.max(5, accuracy / 2) &&
       c.turn < 65);
     if (ambiguous) {
-      this.previous = null;
-      this.deltaValid = false;
-      this.sessionStartMs = null;
+      this.beginGap();
       this.pending = null;
-      return this.state = { ...empty('identifying', 'Road level ambiguous'), speedKmh,
-        road: this.confirmed ? this.state.road : null, entryTime: this.entryTime,
-        entrySource: this.entrySource, entryConfidence: this.entryConfidence,
-        entryUncertaintyMs: this.entryUncertaintyMs };
+      return this.heldState('identifying', 'Road level ambiguous', speedKmh, null, time, true);
     }
 
     const selectedExpressway = this.byId.has(selected.road.id);
@@ -460,68 +480,103 @@ export class Tracker {
       accuracy <= 30 && selected.match.distanceM <= Math.max(15, accuracy) &&
       headingUseful && selected.turn <= 45;
     if (credibleEntry && !this.provisional && this.reconstructionStatus !== 'unresolved') {
+      if (this.sessionId == null) {
+        this.lastValidDeltaSeconds = null;
+        this.lastValidDeltaAt = null;
+        this.lastLiveState = null;
+        this.committed = null;
+        this.gapStart = null;
+      }
       this.provisional = { road: selected.road, fix: { time, alongM: selected.match.alongM, point },
         accuracy, heading };
+      this.sessionId ??= `session-${this.nextSessionId++}`;
       this.entryTime = time;
       this.entrySource = 'first-mainline-fix';
       this.entryConfidence = isTunnel(selected.road, selected.match.alongM) ? 'low' : 'approximate';
       this.entryUncertaintyMs = Math.round(accuracy / Math.max(2, speedMps || 0) * 1000);
     }
-    if (this.provisional && this.reconstructionStatus === 'pending' && !this.gapAnchor) {
-      const evidence = this.provisional;
-      const path = selectedExpressway ? this.gapPath(evidence.road, selected.road) : null;
-      const reference = path && this.gapReference(path, evidence.fix.alongM, selected.match.alongM);
-      const travel = path ? path.slice(0, -1).reduce((sum, r, i) => sum +
-        (r.lengthM || roadLengthM(r)) - (i ? 0 : evidence.fix.alongM), 0) + selected.match.alongM : -1;
-      const dt = (time - evidence.fix.time) / 1000;
-      if (path && reference != null && dt > 0 && travel >= 0 && travel <= dt * 55 + accuracy * 3) {
-        this.confirmed = true;
-        this.currentRoad = selected.road;
-        this.previous = { time, alongM: selected.match.alongM, point };
-        this.elapsedSeconds = dt;
-        this.referenceSeconds = reference;
-        this.cumulativeReferenceAssumed = this.pathAssumed(path, evidence.fix.alongM, selected.match.alongM);
-        this.deltaValid = true;
-        this.fullSessionAvailable = true;
-        this.reconstructionStatus = 'reconstructed';
-        this.sessionStartMs = evidence.fix.time;
-        this.reacquiring = false;
-        this.provisional = null;
-      } else {
-        this.provisional = null;
-        this.fullSessionAvailable = false;
-        this.reconstructionStatus = 'unresolved';
-      }
-    }
-    if (this.gapAnchor && selectedExpressway) {
+    if (this.gapAnchor) {
       const anchor = this.gapAnchor;
-      const path = this.gapPath(anchor.road, selected.road);
-      const reference = path && this.gapReference(path, anchor.fix.alongM, selected.match.alongM);
-      const travel = path ? path.slice(0, -1).reduce((sum, r, i) => sum +
-        (r.lengthM || roadLengthM(r)) - (i ? 0 : anchor.fix.alongM), 0) + selected.match.alongM : -1;
-      const dt = (time - anchor.fix.time) / 1000;
-      if (path && reference != null && travel >= 0 && travel <= dt * 55 + accuracy * 3) {
-        this.elapsedSeconds += dt;
-        this.referenceSeconds += reference;
-        this.cumulativeReferenceAssumed ||= this.pathAssumed(path, anchor.fix.alongM, selected.match.alongM);
-        this.previous = { time, alongM: selected.match.alongM, point };
-        this.currentRoad = selected.road;
-        this.deltaValid = true;
-        this.reacquiring = false;
-        this.gapAnchor = null;
-        this.fullSessionAvailable = true;
-        this.reconstructionStatus = 'reconstructed';
-        this.sessionStartMs = this.entryTime;
+      if (selectedExpressway) {
+        const path = this.gapPath(anchor.road, selected.road);
+        const reference = path && this.gapReference(path, anchor.fix.alongM, selected.match.alongM);
+        const travel = path ? path.slice(0, -1).reduce((sum, r, i) => sum +
+          (r.lengthM || roadLengthM(r)) - (i ? 0 : anchor.fix.alongM), 0) +
+          selected.match.alongM - (path.length === 1 ? anchor.fix.alongM : 0) : -1;
+        const dt = (time - anchor.fix.time) / 1000;
+        if (path && reference != null && dt > 0 && travel >= 0 && travel <= dt * 55 + accuracy * 3) {
+          const prior = this.recoveryCandidate;
+          if (!prior || !this.sameLogicalRoad(prior.road, selected.road) || time - prior.time < 1000) {
+            if (!prior || !this.sameLogicalRoad(prior.road, selected.road))
+              this.recoveryCandidate = { road: selected.road, time };
+            this.reconstructionStatus = 'pending';
+            return this.heldState('identifying', 'Checking route after GPS gap', speedKmh,
+              { id: selected.road.id, name: selected.road.name, kind: 'expressway' }, time, true);
+          }
+          if (!this.appliedGaps.has(anchor.id)) {
+            this.elapsedSeconds = anchor.elapsed + dt;
+            this.referenceSeconds = anchor.reference + reference;
+            this.cumulativeReferenceAssumed = anchor.assumed ||
+              this.pathAssumed(path, anchor.fix.alongM, selected.match.alongM);
+            this.appliedGaps.add(anchor.id);
+          }
+          this.currentRoad = selected.road;
+          this.previous = { time, alongM: selected.match.alongM, point };
+          this.confirmed = true;
+          this.deltaValid = true;
+          this.fullSessionAvailable = true;
+          this.reconstructionStatus = 'reconstructed';
+          this.sessionStartMs = this.entryTime;
+          this.provisional = null;
+          this.gapAnchor = null;
+          this.recoveryCandidate = null;
+          this.gapStart = null;
+          this.reacquiring = false;
+        } else {
+          this.recoveryCandidate = null;
+          this.reconstructionStatus = 'unresolved';
+          return this.heldState('identifying', 'Route through GPS gap unresolved', speedKmh,
+            { id: selected.road.id, name: selected.road.name, kind: 'expressway' }, time, true);
+        }
       } else {
-        this.gapAnchor = null;
-        this.fullSessionAvailable = false;
-        this.reconstructionStatus = 'unresolved';
+        const prior = this.recoveryCandidate;
+        this.recoveryCandidate = prior && this.sameLogicalRoad(prior.road, selected.road) ? prior :
+          { road: selected.road, time };
+        if (time - this.recoveryCandidate.time >= this.options.switchHoldMs) {
+          this.completedSession = { sessionId: this.sessionId, entryTime: this.entryTime,
+            exitTime: time, lastValidDeltaSeconds: this.lastValidDeltaSeconds,
+            lastValidDeltaAt: this.lastValidDeltaAt, elapsedSeconds: (time - this.entryTime) / 1000,
+            referenceSeconds: this.referenceSeconds, cumulativeReferenceAssumed: this.cumulativeReferenceAssumed,
+            status: 'completed-with-gap' };
+          this.gapAnchor = null;
+          this.provisional = null;
+          this.sessionId = null;
+          this.entryTime = null;
+          this.entrySource = null;
+          this.entryConfidence = null;
+          this.entryUncertaintyMs = null;
+          this.confirmed = true;
+          this.currentRoad = selected.road;
+          this.previous = { time, alongM: selected.match.alongM, point };
+          this.reconstructionStatus = 'none';
+          this.lastLiveState = null;
+          this.committed = null;
+          this.recoveryCandidate = null;
+          this.gapStart = null;
+          this.elapsedSeconds = 0;
+          this.referenceSeconds = 0;
+          this.deltaValid = false;
+        } else return this.heldState('exiting', 'Confirming expressway exit', speedKmh,
+          { id: selected.road.id, name: selected.road.name, kind: 'local' }, time, true);
       }
     }
-    if (this.gapAnchor && !selectedExpressway) {
-      this.gapAnchor = null;
-      this.fullSessionAvailable = false;
-      this.reconstructionStatus = 'unresolved';
+    if (this.confirmed && this.committed && !this.sameLogicalRoad(this.currentRoad, selected.road) && !this.gapAnchor) {
+      this.beginGap();
+      this.recoveryCandidate = { road: selected.road, time };
+      return this.heldState(selectedExpressway ? 'entering' : 'exiting',
+        'Confirming road change', speedKmh,
+        { id: selected.road.id, name: selected.road.name, kind: selectedExpressway ? 'expressway' : 'local' },
+        time, true);
     }
     const currentExpressway = this.currentRoad && this.byId.has(this.currentRoad.id);
     const continuous = this.sameLogicalRoad(this.currentRoad, selected.road);
@@ -550,7 +605,12 @@ export class Tracker {
           entryConfidence: this.entryConfidence, entryUncertaintyMs: this.entryUncertaintyMs,
           provisional: !!this.provisional,
           elapsedClockSeconds: this.entryTime == null ? null : (time - this.entryTime) / 1000,
-          reconstructionStatus: this.reconstructionStatus };
+          reconstructionStatus: this.reconstructionStatus, sessionId: this.sessionId,
+          deltaStatus: this.sessionId ? 'recovering' : 'not-started',
+          lastValidDeltaSeconds: this.lastValidDeltaSeconds,
+          lastValidDeltaAt: this.lastValidDeltaAt,
+          gapStart: this.gapStart, acceptedFix: true,
+          lastAcceptedFixAt: this.lastAcceptedFixAt };
       }
       this.confirmed = true;
       this.provisional = null;
@@ -597,7 +657,9 @@ export class Tracker {
         speedKmh, limitKmh: limitAt(road, match.alongM), limitAssumed: limitAssumedAt(road, match.alongM),
         limitSource: limitAssumedAt(road, match.alongM) ? 'Assumed 50 km/h reference' : 'OSM maxspeed tag',
         matchedDistanceM: match.distanceM, alongM: match.alongM,
-        confidence: accuracy > 30 || match.distanceM > 30 ? 'low' : 'medium' };
+        confidence: accuracy > 30 || match.distanceM > 30 ? 'low' : 'medium',
+        completedSession: this.completedSession, acceptedFix: true,
+        lastAcceptedFixAt: this.lastAcceptedFixAt };
     }
     const oldRoad = this.currentRoad;
     const sameRoad = oldRoad?.id === road.id;
@@ -669,7 +731,7 @@ export class Tracker {
         return { name: e.name || e.label || 'Unnamed exit', number: e.number ?? null,
           distanceM: distance, projectedDeltaSeconds, forecast: true, referenceAssumed };
       });
-    return this.state = {
+    this.state = {
       status: 'tracking', reason: inTunnel ? 'Tunnel: GPS confidence reduced' : null,
       confidence, road: { id: road.id, ref: road.ref || null, name: road.name || road.ref || '',
         direction: road.travelDirection || road.direction || '', kind: 'expressway', isExpressway: true },
@@ -684,7 +746,24 @@ export class Tracker {
       entryConfidence: this.entryConfidence, entryUncertaintyMs: this.entryUncertaintyMs,
       elapsedClockSeconds: this.entryTime == null ? null : (time - this.entryTime) / 1000,
       timingBasis: this.sessionStartMs === this.entryTime && this.fullSessionAvailable ? 'since detection' : 'since reacquisition',
-      fullSessionAvailable: this.fullSessionAvailable && this.deltaValid
+      fullSessionAvailable: this.fullSessionAvailable && this.deltaValid,
+      deltaStatus: deltaSeconds == null ? 'recovering' : 'live',
+      lastValidDeltaSeconds: deltaSeconds == null ? this.lastValidDeltaSeconds : deltaSeconds,
+      lastValidDeltaAt: deltaSeconds == null ? this.lastValidDeltaAt : time,
+      gapStart: this.gapStart, sessionId: this.sessionId,
+      acceptedFix: true, lastAcceptedFixAt: this.lastAcceptedFixAt,
+      completedSession: this.completedSession,
+      heldExits: []
     };
+    if (deltaSeconds != null) {
+      this.sessionId ??= `session-${this.nextSessionId++}`;
+      this.state.sessionId = this.sessionId;
+      this.lastValidDeltaSeconds = deltaSeconds;
+      this.lastValidDeltaAt = time;
+      this.lastLiveState = this.state;
+      this.committed = { road, fix: this.previous, elapsed: this.elapsedSeconds,
+        reference: this.referenceSeconds, assumed: this.cumulativeReferenceAssumed };
+    }
+    return this.state;
   }
 }

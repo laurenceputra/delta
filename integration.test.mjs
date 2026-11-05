@@ -193,7 +193,9 @@ test('tunnel GPS loss keeps road and entry context without fabricated readings',
   assert.equal(missing.speedKmh, null);
   assert.equal(missing.deltaSeconds, null);
   assert.deepEqual(missing.exits, []);
-  const reacquired = tracker.update(fix(130, 5000));
+  const firstReturn = tracker.update(fix(130, 5000));
+  assert.equal(firstReturn.deltaSeconds, null);
+  const reacquired = tracker.update(fix(150, 6000));
   assert.equal(reacquired.road.id, road.id);
   assert.equal(reacquired.entryTime, confirmed.entryTime);
   assert.equal(reacquired.timingBasis, 'since detection');
@@ -217,12 +219,14 @@ test('long unique directed-chain tunnel gap restores original entry timing', () 
   assert.equal(gap.entryTime, base);
   assert.equal(gap.deltaSeconds, null);
   assert.equal(gap.speedKmh, null);
-  const after = tracker.update(fix(b, 2200, 180000));
+  const firstReturn = tracker.update(fix(b, 2200, 180000));
+  assert.equal(firstReturn.deltaSeconds, null);
+  const after = tracker.update(fix(b, 2225, 181000));
   assert.equal(after.road.id, b.id);
   assert.equal(after.entryTime, base);
-  assert.equal(after.elapsedClockSeconds, 180);
+  assert.equal(after.elapsedClockSeconds, 181);
   assert.equal(after.timingBasis, 'since detection');
-  assert.ok(after.elapsedSeconds >= 180);
+  assert.ok(after.elapsedSeconds >= 181);
   assert.ok(Number.isFinite(after.deltaSeconds));
   assert.ok(after.elapsedSeconds > before.elapsedSeconds);
 });
@@ -244,11 +248,12 @@ test('forked tunnel path does not invent full-gap reference timing', () => {
   const pending = tracker.update(fix(d, 500, 100000));
   assert.equal(pending.road.id, a.id);
   assert.equal(pending.deltaSeconds, null);
-  const after = tracker.update(fix(d, 600, 106000));
-  assert.equal(after.road.id, d.id);
+  tracker.update(fix(d, 600, 106000));
+  const after = tracker.update(fix(d, 625, 107000));
+  assert.equal(after.road.id, a.id);
   assert.equal(after.entryTime, before.entryTime);
   assert.equal(after.deltaSeconds, null);
-  assert.notEqual(after.timingBasis, 'since detection');
+  assert.equal(after.deltaStatus, 'unresolved');
 });
 
 test('brief ramp candidate does not replace confirmed mainline or accrue time', () => {
@@ -266,12 +271,19 @@ test('brief ramp candidate does not replace confirmed mainline or accrue time', 
   assert.equal(candidate.candidateRoad.id, ramp.id);
   assert.equal(candidate.deltaSeconds, null);
   assert.deepEqual(candidate.exits, []);
-  const returned = tracker.update(fix(mainline, .6, 3000));
+  const pendingReturn = tracker.update(fix(mainline, .6, 3000));
+  assert.equal(pendingReturn.deltaSeconds, null);
+  assert.equal(pendingReturn.gapStart, candidate.gapStart);
+  assert.equal(pendingReturn.entryTime, confirmed.entryTime);
+  assert.equal(pendingReturn.sessionId, confirmed.sessionId);
+  const returned = tracker.update(fix(mainline, .65, 4000));
   assert.equal(returned.status, 'tracking');
   assert.equal(returned.road.id, mainline.id);
   assert.equal(returned.entryTime, confirmed.entryTime);
-  assert.equal(returned.deltaSeconds, null);
-  assert.equal(returned.timingBasis, 'since reacquisition');
+  assert.equal(returned.deltaStatus, 'live');
+  assert.equal(returned.timingBasis, 'since detection');
+  assert.ok(Math.abs(returned.deltaSeconds -
+    (4 - (roadLengthM(mainline) * .35) / (90 / 3.6))) < .1);
 });
 
 test('one fix interval crossing multiple limit zones uses each zone distance', () => {
@@ -328,11 +340,13 @@ test('bundled MCE to KPE GPS gap reconstructs only its directed connection', () 
   const before = tracker.update(fix(mce, 700, 8000));
   const gap = tracker.invalidate('Tunnel GPS unavailable');
   assert.equal(gap.deltaSeconds, null);
-  const after = tracker.update(fix(kpe, 150, 180000));
+  const firstReturn = tracker.update(fix(kpe, 150, 180000));
+  assert.equal(firstReturn.deltaSeconds, null);
+  const after = tracker.update(fix(kpe, 175, 181000));
   assert.equal(after.status, 'tracking');
   assert.equal(after.road.id, kpe.id);
   assert.equal(after.entryTime, before.entryTime);
-  assert.equal(after.elapsedClockSeconds, 180);
+  assert.equal(after.elapsedClockSeconds, 181);
   assert.equal(after.timingBasis, 'since detection');
   assert.ok(Number.isFinite(after.deltaSeconds));
 });
@@ -479,4 +493,126 @@ test('provisional CTE gap across a fork cannot invent full-session pace', () => 
   const returned = tracker.update(fix(d, 500, 100000));
   assert.equal(returned.deltaSeconds, null);
   assert.notEqual(returned.reconstructionStatus, 'reconstructed');
+});
+
+test('CTE outage holds one delta then reconstructs exact full-session pace after two fixes', () => {
+  const cte = byId.get('osm-way-16894437');
+  const tracker = new Tracker({ roads: [cte] });
+  const base = 1_800_000_000_000;
+  const fix = (metres, ms) => ({ ...sampleAt(cte, metres), accuracy: 5,
+    speed: 20, timestamp: base + ms });
+  tracker.update(fix(100, 0));
+  const before = tracker.update(fix(150, 2000));
+  assert.equal(before.deltaStatus, 'live');
+  assert.ok(Math.abs(before.deltaSeconds - (2 - 50 / (50 / 3.6))) < .05);
+  const held = tracker.invalidate('Tunnel GPS unavailable');
+  assert.equal(held.deltaStatus, 'held');
+  assert.equal(held.deltaSeconds, null);
+  assert.equal(held.lastValidDeltaSeconds, before.deltaSeconds);
+  assert.equal(held.entryTime, base);
+  assert.equal(held.speedKmh, null);
+  assert.deepEqual(held.exits, []);
+  const first = tracker.update(fix(500, 22000));
+  assert.equal(first.deltaStatus, 'recovering');
+  assert.equal(first.deltaSeconds, null);
+  const recovered = tracker.update(fix(550, 23000));
+  assert.equal(recovered.deltaStatus, 'live');
+  assert.equal(recovered.entryTime, base);
+  assert.equal(recovered.elapsedSeconds, 23);
+  assert.ok(Math.abs(recovered.deltaSeconds - (23 - 450 / (50 / 3.6))) < .05);
+});
+
+test('duplicate fixes and repeated outage errors cannot count elapsed time twice', () => {
+  const cte = byId.get('osm-way-16894437');
+  const tracker = new Tracker({ roads: [cte] });
+  const base = 1_800_000_000_000;
+  const fix = (metres, ms) => ({ ...sampleAt(cte, metres), accuracy: 5,
+    speed: 20, timestamp: base + ms });
+  tracker.update(fix(100, 0));
+  const before = tracker.update(fix(150, 2000));
+  const duplicate = tracker.update(fix(150, 2000));
+  const older = tracker.update(fix(140, 1000));
+  assert.equal(duplicate.deltaSeconds, before.deltaSeconds);
+  assert.equal(older.deltaSeconds, before.deltaSeconds);
+  assert.equal(older.entryTime, base);
+  const firstGap = tracker.invalidate('Tunnel GPS unavailable');
+  const secondGap = tracker.invalidate('Tunnel GPS unavailable');
+  assert.equal(secondGap.gapStart, firstGap.gapStart);
+  assert.equal(secondGap.lastValidDeltaSeconds, before.deltaSeconds);
+  assert.equal(secondGap.entryTime, base);
+  const bad = tracker.update({ ...fix(160, 4000), accuracy: 200 });
+  assert.equal(bad.gapStart, firstGap.gapStart);
+  assert.equal(bad.lastValidDeltaSeconds, before.deltaSeconds);
+  tracker.update(fix(500, 22000));
+  const recovered = tracker.update(fix(550, 23000));
+  assert.ok(Math.abs(recovered.deltaSeconds - (23 - 450 / (50 / 3.6))) < .05);
+});
+
+test('two CTE outages reconstruct once each from the original entry anchor', () => {
+  const cte = byId.get('osm-way-16894437');
+  const tracker = new Tracker({ roads: [cte] });
+  const base = 1_800_000_000_000;
+  const fix = (metres, ms) => ({ ...sampleAt(cte, metres), accuracy: 5,
+    speed: 20, timestamp: base + ms });
+  tracker.update(fix(100, 0));
+  tracker.update(fix(150, 2000));
+  tracker.invalidate('First tunnel loss');
+  tracker.update(fix(500, 22000));
+  const first = tracker.update(fix(550, 23000));
+  assert.equal(first.deltaStatus, 'live');
+  tracker.invalidate('Second tunnel loss');
+  tracker.invalidate('Second tunnel loss repeated');
+  tracker.update(fix(800, 42000));
+  const second = tracker.update(fix(850, 43000));
+  assert.equal(second.deltaStatus, 'live');
+  assert.equal(second.entryTime, base);
+  assert.equal(second.elapsedSeconds, 43);
+  assert.ok(Math.abs(second.deltaSeconds - (43 - 750 / (50 / 3.6))) < .05);
+});
+
+test('confirmed six-second expressway exit archives its session summary', () => {
+  const mainline = byId.get('osm-way-62272687');
+  const ramp = local.roads.find(road => road.id === 'osm-way-32790032');
+  const tracker = new Tracker({ roads: [mainline], localRoads: [ramp] });
+  const base = 1_800_000_000_000;
+  const fix = (road, fraction, ms) => ({ ...sampleAt(road, roadLengthM(road) * fraction),
+    accuracy: 5, speed: 15, timestamp: base + ms });
+  tracker.update(fix(mainline, .3, 0));
+  const live = tracker.update(fix(mainline, .5, 1000));
+  const candidate = tracker.update(fix(ramp, .2, 2000));
+  assert.equal(candidate.deltaStatus, 'recovering');
+  assert.equal(candidate.completedSession, null);
+  const completed = tracker.update(fix(ramp, .9, 8000));
+  assert.equal(completed.status, 'local');
+  assert.equal(completed.deltaSeconds, null);
+  assert.equal(completed.deltaStatus, 'not-started');
+  assert.equal(completed.entryTime, null);
+  assert.equal(completed.completedSession.entryTime, live.entryTime);
+  assert.equal(completed.completedSession.lastValidDeltaSeconds, live.deltaSeconds);
+  assert.equal(completed.completedSession.exitTime, base + 8000);
+});
+
+test('unresolved fork candidate can later recover on a unique true road', () => {
+  const road = (id, coordinates, nextRoadIds) => ({ id, ref: 'PIE', name: 'PIE',
+    speedLimit: 90, nextRoadIds, coordinates });
+  const a = road('uncertain-a', [[103.9, 1.35], [103.91, 1.35]], ['uncertain-b', 'uncertain-c']);
+  const b = road('uncertain-b', [[103.91, 1.35], [103.92, 1.35]], ['uncertain-d']);
+  const c = road('uncertain-c', [[103.91, 1.35], [103.915, 1.351], [103.92, 1.35]], ['uncertain-d']);
+  const d = road('uncertain-d', [[103.92, 1.35], [103.93, 1.35]], []);
+  const tracker = new Tracker({ roads: [a, b, c, d] });
+  const base = 1_800_000_000_000;
+  const fix = (segment, metres, ms) => ({ ...sampleAt(segment, metres),
+    accuracy: 5, speed: 25, timestamp: base + ms });
+  tracker.update(fix(a, 50, 0));
+  const before = tracker.update(fix(a, 100, 2000));
+  tracker.invalidate('Tunnel GPS unavailable');
+  const unresolved = tracker.update(fix(d, 500, 100000));
+  assert.equal(unresolved.deltaStatus, 'unresolved');
+  assert.equal(unresolved.lastValidDeltaSeconds, before.deltaSeconds);
+  const firstTrue = tracker.update(fix(a, 150, 101000));
+  assert.equal(firstTrue.deltaSeconds, null);
+  const recovered = tracker.update(fix(a, 200, 102000));
+  assert.equal(recovered.deltaStatus, 'live');
+  assert.equal(recovered.entryTime, base);
+  assert.ok(Math.abs(recovered.deltaSeconds - (102 - 150 / (90 / 3.6))) < .05);
 });

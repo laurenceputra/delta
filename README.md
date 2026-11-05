@@ -47,6 +47,10 @@ Replay tests validate calculations and data wiring. They do not replace passenge
 
 Engine and integration replay tests cover directed route continuity, local-road transitions, GPS gaps, tunnel reconstruction and ambiguous paths. Chromium checks cover theme persistence, compact live and demo layouts, three visible exits on small screens, and offline assets. These tests use simulated positions, not road measurements.
 
+## App v0.3.2
+
+During GPS loss, a confirmed expressway session keeps its elapsed clock and shows the last valid pace in a muted **LAST KNOWN** state with age. Live speed and pace forecasts remain unavailable until the mapped route is recovered from fresh fixes. Last-known exit names and distances are marked stale. A recovered comparison remains an estimate, and an unresolved route cannot claim a full-session pace. A completed expressway segment is archived in Settings and no longer shown as an active delta on local roads.
+
 ## App v0.3.1
 
 The driving instruments size to their content, keeping the speed value, limit, and limit source inside the card at narrow widths and larger text settings. Compact views retain three exit rows and the bottom safety gutter.
