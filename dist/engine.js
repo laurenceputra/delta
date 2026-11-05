@@ -151,7 +151,9 @@ function empty(status, reason = null) {
     provisional: false, deltaStatus: 'not-started', lastValidDeltaSeconds: null,
     lastValidDeltaAt: null, gapStart: null, sessionId: null, heldExits: [],
     lastKnownLimitKmh: null, lastKnownLimitAssumed: false, completedSession: null,
-    acceptedFix: false, lastAcceptedFixAt: null, rampTransition: null };
+    acceptedFix: false, lastAcceptedFixAt: null, rampTransition: null,
+    visualRoad: null, visualSpeedKmh: null, visualLimitKmh: null,
+    visualLimitAssumed: false, visualLimitSource: null, previousDelta: null };
 }
 
 export class Tracker {
@@ -251,6 +253,12 @@ export class Tracker {
     this.rampFirstFix = null;
     this.lastRampFix = null;
     this.joinEvidence = null;
+    this.visualRoad = null;
+    this.visualCandidate = null;
+    this.visualSpeedKmh = null;
+    this.visualLimitKmh = null;
+    this.visualLimitAssumed = false;
+    this.previousDelta = null;
     this.state = empty('searching');
     return this.state;
   }
@@ -278,7 +286,7 @@ export class Tracker {
 
   heldState(status, reason, speedKmh = null, candidateRoad = null, time = Date.now(), acceptedFix = false) {
     const prior = this.lastLiveState;
-    return this.state = { ...empty(status, reason),
+    return this.decorate({ ...empty(status, reason),
       road: prior?.road || this.state.road,
       candidateRoad, speedKmh,
       entryTime: this.entryTime, entrySource: this.entrySource,
@@ -297,7 +305,99 @@ export class Tracker {
       cumulativeReferenceAssumed: this.cumulativeReferenceAssumed,
       completedSession: this.completedSession,
       rampTransition: this.rampTransition,
-      acceptedFix, lastAcceptedFixAt: this.lastAcceptedFixAt };
+      acceptedFix, lastAcceptedFixAt: this.lastAcceptedFixAt }, time);
+  }
+
+  roadView(road) {
+    return { id: road.id, ref: road.ref || null, name: road.name || road.ref || 'Unnamed road',
+      direction: road.travelDirection || road.destination || road.direction || '',
+      kind: this.byId.has(road.id) ? 'expressway' : road.highway === 'motorway_link' ? 'ramp' : 'local',
+      isExpressway: this.byId.has(road.id) };
+  }
+
+  updateVisual(selected, time, accuracy, speedKmh) {
+    const road = selected.road;
+    const reliable = accuracy <= 30 && selected.match.distanceM <= 30 && selected.turn <= 45;
+    if (!this.visualRoad && reliable) this.visualRoad = this.roadView(road);
+    else if (this.visualRoad && this.sameLogicalRoad(this.byId.get(this.visualRoad.id) ||
+      this.localRoads.find(r => r.id === this.visualRoad.id), road)) {
+      this.visualRoad = this.roadView(road);
+      this.visualCandidate = null;
+    } else if (reliable) {
+      const prior = this.visualCandidate;
+      this.visualCandidate = prior && this.sameLogicalRoad(prior.road, road) ? prior : { road, firstTime: time, count: 0 };
+      this.visualCandidate.count++;
+      if (this.visualCandidate.count >= 2 && time - this.visualCandidate.firstTime >= 2000) {
+        if (!this.previousDelta && this.committed && !this.sameLogicalRoad(this.committed.road, road) &&
+            this.lastValidDeltaSeconds != null) {
+          this.previousDelta = { value: this.lastValidDeltaSeconds,
+            sourceRef: this.committed.road.ref || null, lastValidAt: this.lastValidDeltaAt,
+            expiresAt: time + 30000, sessionId: this.sessionId };
+        }
+        this.visualRoad = this.roadView(road);
+        this.visualCandidate = null;
+      }
+    } else this.visualCandidate = null;
+    this.visualSpeedKmh = speedKmh;
+    const visualSource = this.byId.get(this.visualRoad?.id) || this.localRoads.find(r => r.id === this.visualRoad?.id);
+    if (visualSource?.id === road.id && reliable) {
+      this.visualLimitKmh = limitAt(road, selected.match.alongM);
+      this.visualLimitAssumed = limitAssumedAt(road, selected.match.alongM);
+    } else if (this.visualRoad && this.visualRoad.id !== road.id) {
+      this.visualLimitKmh = null;
+      this.visualLimitAssumed = false;
+    }
+  }
+
+  decorate(state, time = Date.now()) {
+    this.tick(time, false);
+    this.state = { ...state, visualRoad: this.visualRoad,
+      visualSpeedKmh: state.status === 'stale' ? null : this.visualSpeedKmh,
+      visualLimitKmh: state.status === 'stale' ? null : this.visualLimitKmh,
+      visualLimitAssumed: this.visualLimitAssumed,
+      visualLimitSource: this.visualLimitKmh == null ? null :
+        this.visualLimitAssumed ? 'Assumed 50 km/h reference' : 'OSM maxspeed tag',
+      previousDelta: this.previousDelta, completedSession: this.completedSession,
+      sessionId: this.sessionId, entryTime: this.entryTime,
+      lastValidDeltaSeconds: this.lastValidDeltaSeconds,
+      lastValidDeltaAt: this.lastValidDeltaAt,
+      deltaStatus: this.sessionId == null && state.deltaStatus !== 'live' ? 'not-started' : state.deltaStatus };
+    return this.state;
+  }
+
+  tick(now = Date.now(), updateState = true) {
+    const time = timestampMs(now);
+    let expiredActive = false;
+    if (this.previousDelta && Number.isFinite(time) && time >= this.previousDelta.expiresAt) {
+      const prior = this.previousDelta;
+      if (!this.completedSession || this.completedSession.sessionId !== prior.sessionId)
+        this.completedSession = { sessionId: prior.sessionId, entryTime: this.entryTime,
+          exitTime: null, confirmationTime: time, finalDeltaSeconds: null,
+          finalTimingStatus: 'incomplete', lastValidDeltaSeconds: prior.value,
+          lastValidDeltaAt: prior.lastValidAt, status: 'expired-previous-road' };
+      if (this.sessionId === prior.sessionId && this.state?.deltaStatus !== 'live') {
+        expiredActive = true;
+        this.committed = null;
+        this.gapAnchor = null;
+        this.sessionId = null;
+        this.entryTime = null;
+        this.lastLiveState = null;
+        this.lastValidDeltaSeconds = null;
+        this.lastValidDeltaAt = null;
+        this.currentRoad = this.byId.get(this.visualRoad?.id) ||
+          this.localRoads.find(r => r.id === this.visualRoad?.id) || null;
+      }
+      this.previousDelta = null;
+    }
+    if (updateState) this.state = { ...this.state, previousDelta: this.previousDelta,
+      completedSession: this.completedSession,
+      sessionId: this.sessionId,
+      entryTime: this.entryTime,
+      lastValidDeltaSeconds: this.lastValidDeltaSeconds,
+      lastValidDeltaAt: this.lastValidDeltaAt,
+      deltaStatus: expiredActive ? 'not-started' : this.state.deltaStatus,
+      elapsedClockSeconds: this.entryTime == null ? null : Math.max(0, (time - this.entryTime) / 1000) };
+    return this.state;
   }
 
   connected(from, to) {
@@ -434,9 +534,15 @@ export class Tracker {
         current = next.length === 1 ? next[0] : null;
       }
     }
-    return !this.byId.has(a.id) && !this.byId.has(b.id) &&
-      !!a.name && a.name === b.name && a.highway === b.highway &&
-      distanceM(vertices(a).at(-1), vertices(b)[0]) < 60;
+    if (!this.byId.has(a.id) && !this.byId.has(b.id) && a.name && a.name === b.name) {
+      const av = vertices(a), bv = vertices(b);
+      const near = distanceM(av.at(-1), bv[0]) < 60 ||
+        (!a.oneway && !b.oneway && distanceM(av[0], bv.at(-1)) < 60);
+      const turn = angleDifference(bearingDegrees(av[0], av.at(-1)),
+        bearingDegrees(bv[0], bv.at(-1)));
+      return near && (!(a.oneway && b.oneway) || turn <= 60);
+    }
+    return false;
   }
 
   classifyRamp(road, priorRoad) {
@@ -493,7 +599,7 @@ export class Tracker {
       return this.invalidate('GPS accuracy or position unavailable');
     }
     if (this.lastTime != null && time <= this.lastTime)
-      return this.state = { ...this.state, acceptedFix: false, lastAcceptedFixAt: this.lastAcceptedFixAt };
+      return this.decorate({ ...this.state, acceptedFix: false, lastAcceptedFixAt: this.lastAcceptedFixAt }, time);
     if (this.lastTime != null && time - this.lastTime > this.options.maxGapMs) {
       this.beginGap();
     }
@@ -550,6 +656,8 @@ export class Tracker {
       this.pending = null;
       return this.heldState('identifying', 'Road level ambiguous', speedKmh, null, time, true);
     }
+
+    this.updateVisual(selected, time, accuracy, speedKmh);
 
     const selectedExpressway = this.byId.has(selected.road.id);
     if (this.rampLinks.has(selected.road.id)) {
@@ -659,7 +767,10 @@ export class Tracker {
         const transfer = this.rampTransition?.classification === 'transfer';
         const unresolvedRamp = selected.road.highway === 'motorway_link' &&
           this.rampTransition?.classification !== 'leaving';
-        if (!transfer && !unresolvedRamp && time - this.recoveryCandidate.time >= this.options.switchHoldMs) {
+        const provenExit = this.rampTransition?.classification === 'leaving' &&
+          this.rampFirstFix && this.rampTransition.toRoadId === selected.road.id &&
+          selected.road.highway !== 'motorway_link';
+        if (!transfer && !unresolvedRamp && provenExit && this.visualRoad?.id === selected.road.id) {
           const boundary = this.rampTransition?.classification === 'leaving' ? this.rampTransition.boundary : null;
           const anchor = this.gapAnchor;
           const estimated = boundary?.timing === 'estimated' && anchor &&
@@ -731,7 +842,7 @@ export class Tracker {
         this.deltaValid = false;
         this.previous = null;
         this.sessionStartMs = null;
-        return this.state = { ...empty(this.confirmed && currentExpressway ? 'exiting' :
+        return this.decorate({ ...empty(this.confirmed && currentExpressway ? 'exiting' :
           selectedExpressway && this.provisional ? 'entering' :
           this.confirmed && selectedExpressway ? 'entering' : 'identifying', 'Confirming road'),
           speedKmh, road: this.confirmed ? this.state.road : {
@@ -751,7 +862,7 @@ export class Tracker {
           lastValidDeltaSeconds: this.lastValidDeltaSeconds,
           lastValidDeltaAt: this.lastValidDeltaAt,
           gapStart: this.gapStart, acceptedFix: true,
-          lastAcceptedFixAt: this.lastAcceptedFixAt };
+          lastAcceptedFixAt: this.lastAcceptedFixAt }, time);
       }
       this.confirmed = true;
       this.provisional = null;
@@ -792,12 +903,20 @@ export class Tracker {
 
     const { road, match } = selected;
     if (!selectedExpressway) {
+      if (this.sessionId && !this.committed && !this.gapAnchor) {
+        this.provisional = null;
+        this.sessionId = null;
+        this.entryTime = null;
+        this.entrySource = null;
+        this.entryConfidence = null;
+        this.entryUncertaintyMs = null;
+      }
       this.currentRoad = road;
       this.previous = { time, alongM: match.alongM, point };
       this.elapsedSeconds = 0;
       this.referenceSeconds = 0;
       this.deltaValid = false;
-      return this.state = { ...empty('local'), road: { id: road.id, ref: road.ref || null,
+      return this.decorate({ ...empty('local'), road: { id: road.id, ref: road.ref || null,
         name: road.name || road.ref || 'Unnamed road', direction: road.destination || '',
         kind: road.highway === 'motorway_link' ? 'ramp' : 'local', isExpressway: false },
         speedKmh, limitKmh: limitAt(road, match.alongM), limitAssumed: limitAssumedAt(road, match.alongM),
@@ -806,7 +925,7 @@ export class Tracker {
         confidence: accuracy > 30 || match.distanceM > 30 ? 'low' : 'medium',
         completedSession: this.completedSession, rampTransition: this.rampTransition,
         acceptedFix: true,
-        lastAcceptedFixAt: this.lastAcceptedFixAt };
+        lastAcceptedFixAt: this.lastAcceptedFixAt }, time);
     }
     const oldRoad = this.currentRoad;
     const sameRoad = oldRoad?.id === road.id;
@@ -910,6 +1029,14 @@ export class Tracker {
       heldExits: []
     };
     if (deltaSeconds != null) {
+      if (this.previousDelta?.sessionId === this.sessionId && this.committed &&
+          this.sameLogicalRoad(this.committed.road, road)) {
+        this.previousDelta = null;
+        this.visualRoad = this.roadView(road);
+        this.visualLimitKmh = limitAt(road, match.alongM);
+        this.visualLimitAssumed = limitAssumedAt(road, match.alongM);
+        this.visualCandidate = null;
+      }
       this.sessionId ??= `session-${this.nextSessionId++}`;
       this.state.sessionId = this.sessionId;
       this.lastValidDeltaSeconds = deltaSeconds;
@@ -918,6 +1045,6 @@ export class Tracker {
       this.committed = { road, fix: this.previous, elapsed: this.elapsedSeconds,
         reference: this.referenceSeconds, assumed: this.cumulativeReferenceAssumed, accuracy };
     }
-    return this.state;
+    return this.decorate(this.state, time);
   }
 }

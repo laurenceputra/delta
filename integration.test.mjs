@@ -606,9 +606,112 @@ test('unproven ramp candidate preserves session despite six-second hold', () => 
   assert.equal(completed.rampTransition, null);
 });
 
+test('two-second visual road switch retains prior delta for one fixed thirty-second window', () => {
+  const mainline = byId.get('osm-way-62272687');
+  const ramp = local.roads.find(road => road.id === 'osm-way-32790032');
+  const tracker = new Tracker({ roads: [mainline], localRoads: [ramp] });
+  const base = 1_800_000_000_000;
+  const at = (road, fraction, ms) => tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+    accuracy: 5, speed: 15, timestamp: base + ms });
+  at(mainline, .3, 0);
+  const live = at(mainline, .5, 1000);
+  const first = at(ramp, .2, 2000);
+  assert.equal(first.visualRoad.id, mainline.id);
+  assert.equal(first.previousDelta, null);
+  const switched = at(ramp, .6, 4000);
+  assert.equal(switched.visualRoad.id, ramp.id);
+  assert.equal(switched.visualSpeedKmh, 54);
+  assert.equal(switched.visualLimitKmh, ramp.speedLimit ?? 50);
+  assert.equal(switched.previousDelta.value, live.deltaSeconds);
+  assert.equal(switched.previousDelta.sourceRef, 'TPE');
+  assert.equal(switched.previousDelta.expiresAt, base + 34000);
+  const continued = at(ramp, .9, 6000);
+  assert.equal(continued.previousDelta.expiresAt, switched.previousDelta.expiresAt);
+  assert.equal(tracker.tick(base + 33999).previousDelta.value, live.deltaSeconds);
+  const expired = tracker.tick(base + 34000);
+  assert.equal(expired.previousDelta, null);
+  assert.equal(expired.completedSession.entryTime, live.entryTime);
+});
+
+test('compatible mainline return within thirty seconds restores original entry without an exit archive', () => {
+  const mainline = byId.get('osm-way-62272687');
+  const ramp = local.roads.find(road => road.id === 'osm-way-32790032');
+  const tracker = new Tracker({ roads: [mainline], localRoads: [ramp] });
+  const base = 1_800_000_000_000;
+  const at = (road, fraction, ms) => tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+    accuracy: 5, speed: 15, timestamp: base + ms });
+  at(mainline, .3, 0);
+  const live = at(mainline, .5, 1000);
+  at(ramp, .2, 2000);
+  const switched = at(ramp, .6, 4000);
+  assert.equal(switched.visualRoad.id, ramp.id);
+  assert.equal(switched.previousDelta.sessionId, live.sessionId);
+  at(ramp, .9, 6000);
+  const returnCandidate = at(mainline, .55, 20000);
+  assert.equal(returnCandidate.entryTime, live.entryTime);
+  const recovered = at(mainline, .8, 22000);
+  assert.equal(recovered.status, 'tracking');
+  assert.equal(recovered.deltaStatus, 'live');
+  assert.equal(recovered.entryTime, live.entryTime);
+  assert.equal(recovered.sessionId, live.sessionId);
+  assert.equal(recovered.visualRoad.id, mainline.id);
+  assert.equal(recovered.previousDelta, null);
+  assert.equal(recovered.completedSession, null);
+});
+
+test('GPS-only outage does not start the visual-switch expiry window', () => {
+  const mainline = byId.get('osm-way-62272687');
+  const tracker = new Tracker({ roads: [mainline] });
+  const base = 1_800_000_000_000;
+  const at = (fraction, ms) => tracker.update({
+    ...sampleAt(mainline, roadLengthM(mainline) * fraction),
+    accuracy: 5, speed: 15, timestamp: base + ms,
+  });
+  at(.3, 0);
+  const live = at(.5, 1000);
+  tracker.invalidate('GPS unavailable', true);
+  const afterMinute = tracker.tick(base + 61000);
+  assert.equal(afterMinute.previousDelta, null);
+  assert.equal(afterMinute.entryTime, live.entryTime);
+  assert.equal(afterMinute.sessionId, live.sessionId);
+  assert.equal(afterMinute.completedSession, null);
+  assert.equal(afterMinute.lastValidDeltaSeconds, live.deltaSeconds);
+});
+
+test('proven TPE exit followed by mapped TPE re-entry starts a new session within retention window', () => {
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  const at = (id, fraction, ms) => {
+    const road = byId.get(id) || local.roads.find(road => road.id === id);
+    return tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+      accuracy: 5, speed: 15, timestamp: base + ms });
+  };
+  at('osm-way-756847962', .2, 0);
+  const original = at('osm-way-756847962', .7, 1000);
+  at('osm-way-139718132', .2, 2000);
+  at('osm-way-139718132', .7, 4000);
+  at('osm-way-139718132', .9, 9000);
+  at('osm-way-628738331', .2, 10000);
+  const exited = at('osm-way-628738331', .7, 12000);
+  assert.equal(exited.completedSession.sessionId, original.sessionId);
+  assert.equal(exited.previousDelta.sessionId, original.sessionId);
+  at('osm-way-655615941', .5, 14000);
+  for (const [id, ms] of [
+    ['osm-way-349477708', 16000], ['osm-way-726148961', 18000],
+    ['osm-way-349477686', 20000], ['osm-way-349477701', 22000],
+    ['osm-way-349477704', 24000],
+  ]) at(id, .5, ms);
+  const reentered = at('osm-way-629360446', .2, 26000);
+  assert.notEqual(reentered.sessionId, original.sessionId);
+  assert.equal(reentered.entryTime, base + 26000);
+  assert.equal(reentered.completedSession.sessionId, original.sessionId);
+  assert.equal(reentered.previousDelta.sessionId, original.sessionId);
+});
+
 test('mapped TPE exit archives the ramp divergence time before six-second confirmation', () => {
   const mainline = byId.get('osm-way-756847962');
   const ramp = local.roads.find(road => road.id === 'osm-way-139718132');
+  const destination = local.roads.find(road => road.id === 'osm-way-628738331');
   const tracker = new Tracker(layered);
   const base = 1_800_000_000_000;
   const at = (road, fraction, ms) => tracker.update({
@@ -621,7 +724,9 @@ test('mapped TPE exit archives the ramp divergence time before six-second confir
   assert.equal(leaving.rampTransition.boundary.timing, 'estimated');
   assert.equal(leaving.completedSession, null);
   at(ramp, .7, 3000);
-  const localState = at(ramp, .9, 9000);
+  at(ramp, .9, 9000);
+  at(destination, .2, 10000);
+  const localState = at(destination, .7, 12000);
   assert.equal(localState.status, 'local');
   assert.equal(localState.completedSession.entryTime, live.entryTime);
   assert.equal(localState.completedSession.finalTimingStatus, 'estimated-boundary');

@@ -193,7 +193,7 @@ test('six second road switch retains confirmed label and suppresses forecasts', 
   assert.equal(tracker.update(at(road, 100, 4000)).status, 'tracking');
   tracker.update(at(local, 100, 5000));
   assert.equal(tracker.update(at(local, 100, 10000)).status, 'exiting');
-  assert.equal(tracker.update(at(local, 100, 11000)).status, 'local');
+  assert.equal(tracker.update(at(local, 100, 11000)).status, 'exiting');
 });
 
 test('stale GPS preserves last road and entry history without live readings', () => {
@@ -394,7 +394,7 @@ test('held session survives repeat errors and recovers once from committed ancho
   assert.equal(restored.reconstructionStatus, 'reconstructed');
 });
 
-test('confirmed local exit archives active session after six seconds', () => {
+test('unproven local road switch archives only after visual retention window', () => {
   const local = { id: 'street', name: 'Street', coordinates: [[103.9, 1.349], [103.91, 1.349]] };
   const tracker = new Tracker({ roads: [road], localRoads: [local] });
   const live = start(tracker, road);
@@ -402,10 +402,12 @@ test('confirmed local exit archives active session after six seconds', () => {
   const exiting = tracker.update(at(local, 100, 7000));
   assert.equal(exiting.deltaSeconds, null);
   const done = tracker.update(at(local, 100, 8000));
-  assert.equal(done.status, 'local');
-  assert.equal(done.sessionId, null);
-  assert.equal(done.completedSession.sessionId, live.sessionId);
-  assert.equal(done.completedSession.status, 'completed-with-gap');
+  assert.equal(done.status, 'exiting');
+  assert.equal(done.sessionId, live.sessionId);
+  assert.equal(done.completedSession, null);
+  const expired = tracker.tick(epoch + 37000);
+  assert.equal(expired.completedSession.sessionId, live.sessionId);
+  assert.equal(expired.completedSession.status, 'expired-previous-road');
 });
 
 test('mapped leaving ramp archives delta at divergence before confirmation', () => {
@@ -422,7 +424,9 @@ test('mapped leaving ramp archives delta at divergence before confirmation', () 
   const firstRamp = tracker.update(at(ramp, 30, 3000));
   assert.equal(firstRamp.rampTransition.classification, 'leaving');
   assert.equal(firstRamp.rampTransition.boundary.timing, 'estimated');
-  const confirmed = tracker.update(at(ramp, 80, 9000));
+  tracker.update(at(ramp, 80, 9000));
+  tracker.update(at(local, 40, 10000));
+  const confirmed = tracker.update(at(local, 70, 12000));
   assert.equal(confirmed.status, 'local');
   assert.ok(confirmed.completedSession.exitTime < epoch + 9000);
   assert.equal(confirmed.completedSession.finalTimingStatus, 'estimated-boundary');
@@ -534,4 +538,61 @@ test('exit boundary estimate is withheld for long or inaccurate brackets', () =>
     const state = tracker.update(at(ramp, 30, 2000 + gap));
     assert.notEqual(state.rampTransition?.boundary?.timing, 'estimated');
   }
+});
+
+test('visual road switches after two seconds and previous delta expires on fixed deadline', () => {
+  const local = { id: 'street', name: 'Street', highway: 'residential', speedLimit: 40,
+    coordinates: [[103.9, 1.349], [103.91, 1.349]] };
+  const other = { id: 'other', name: 'Other Street', highway: 'residential', speedLimit: 30,
+    coordinates: [[103.9, 1.348], [103.91, 1.348]] };
+  const tracker = new Tracker({ roads: [road], localRoads: [local, other] });
+  start(tracker, road);
+  const live = tracker.update(at(road, 150, 2000));
+  const candidate = tracker.update(at(local, 100, 3000));
+  assert.equal(candidate.visualRoad.ref, 'TPE');
+  const switched = tracker.update(at(local, 100, 5000));
+  assert.equal(switched.visualRoad.name, 'Street');
+  assert.equal(switched.visualLimitKmh, 40);
+  assert.equal(switched.visualSpeedKmh, 72);
+  assert.equal(switched.previousDelta.value, live.deltaSeconds);
+  assert.equal(switched.previousDelta.expiresAt, epoch + 35000);
+  tracker.update(at(other, 100, 6000));
+  const changedAgain = tracker.update(at(other, 100, 8000));
+  assert.equal(changedAgain.previousDelta.expiresAt, epoch + 35000);
+  assert.ok(tracker.tick(epoch + 34999).previousDelta);
+  const expired = tracker.tick(epoch + 35000);
+  assert.equal(expired.previousDelta, null);
+  assert.equal(expired.deltaStatus, 'not-started');
+  assert.equal(expired.lastValidDeltaSeconds, null);
+  assert.equal(expired.completedSession.status, 'expired-previous-road');
+});
+
+test('GPS-only outage has no 30 second visual switch deadline', () => {
+  const tracker = new Tracker({ roads: [road] });
+  start(tracker, road);
+  tracker.invalidate('Tunnel GPS loss');
+  const later = tracker.tick(epoch + 300000);
+  assert.equal(later.previousDelta, null);
+  assert.ok(tracker.gapAnchor);
+  assert.ok(tracker.sessionId);
+});
+
+test('unproven local visual switch recovers original session after six seconds', () => {
+  const local = { id: 'street', name: 'Street', highway: 'residential', speedLimit: 40,
+    coordinates: [[103.9, 1.349], [103.91, 1.349]] };
+  const tracker = new Tracker({ roads: [road], localRoads: [local] });
+  const live = start(tracker, road);
+  tracker.update(at(local, 100, 2000));
+  tracker.update(at(local, 100, 4000));
+  const held = tracker.update(at(local, 100, 10000));
+  assert.equal(held.visualRoad.name, 'Street');
+  assert.equal(held.completedSession, null);
+  assert.ok(held.previousDelta);
+  tracker.update(at(road, 200, 18000));
+  const restored = tracker.update(at(road, 230, 19000));
+  assert.equal(restored.status, 'tracking');
+  assert.equal(restored.sessionId, live.sessionId);
+  assert.equal(restored.entryTime, live.entryTime);
+  assert.equal(restored.previousDelta, null);
+  assert.equal(restored.visualRoad.ref, 'TPE');
 });
