@@ -51,6 +51,10 @@ Engine and integration replay tests cover directed route continuity, local-road 
 
 During GPS loss, a confirmed expressway session keeps its elapsed clock and shows the last valid pace in a muted **LAST KNOWN** state with age. Live speed and pace forecasts remain unavailable until the mapped route is recovered from fresh fixes. Last-known exit names and distances are marked stale. A recovered comparison remains an estimate, and an unresolved route cannot claim a full-session pace. A completed expressway segment is archived in Settings and no longer shown as an active delta on local roads.
 
+## App v0.3.3
+
+The driving dashboard keeps speed on the left, pace on the right, and exits below across local roads, route confirmation, GPS gaps, and confirmed mainlines. Inactive pace says “Expressway only”; a provisional first fix says “Entry recorded — awaiting GPS”. Road state changes do not rearrange the instruments.
+
 ## App v0.3.1
 
 The driving instruments size to their content, keeping the speed value, limit, and limit source inside the card at narrow widths and larger text settings. Compact views retain three exit rows and the bottom safety gutter.
