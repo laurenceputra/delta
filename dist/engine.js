@@ -197,6 +197,20 @@ export class Tracker {
     }
     const local = options.localRoads || data?.localRoads || [];
     this.localRoads = (Array.isArray(local) ? local : local.roads || []).filter(r => vertices(r).length >= 2 && !this.byId.has(r.id));
+    this.routeById = new Map([...this.roads, ...this.localRoads].map(r => [r.id, r]));
+    for (const path of this.rampGraph.paths || []) {
+      if (path.kind !== 'joining') continue;
+      const route = [path.fromRoadId, ...(path.linkIds || []), path.toRoadId];
+      for (let i = 1; i < route.length; i++)
+        if (this.routeById.has(route[i - 1]) && this.routeById.has(route[i])) {
+          if (!this.edges.has(route[i - 1])) this.edges.set(route[i - 1], new Set());
+          this.edges.get(route[i - 1]).add(route[i]);
+        }
+    }
+    for (const [from, targets] of this.edges) for (const to of targets) {
+      if (!this.predecessors.has(to)) this.predecessors.set(to, new Set());
+      this.predecessors.get(to).add(from);
+    }
     this.grid = new Map();
     for (const road of [...this.roads, ...this.localRoads]) {
       const points = vertices(road);
@@ -226,6 +240,13 @@ export class Tracker {
     this.confirmed = false;
     this.history = [];
     this.entryTime = null;
+    this.approachTime = null;
+    this.approachAnchor = null;
+    this.expresswayEntryTime = null;
+    this.timingFromMainline = false;
+    this.lastFixDiagnostic = null;
+    this.gpsStatus = 'unavailable';
+    this.candidateDiagnostics = [];
     this.entrySource = null;
     this.entryConfidence = null;
     this.entryUncertaintyMs = null;
@@ -265,16 +286,19 @@ export class Tracker {
 
   invalidate(reason = 'GPS fix stale', preserveContext = true) {
     if (!preserveContext) this.reset();
+    this.gpsStatus = 'unavailable';
     this.beginGap();
     return this.heldState(this.provisional && !this.confirmed ? 'entering' : 'stale', reason);
   }
 
   beginGap() {
     if (!this.gapAnchor) {
-      const anchor = this.committed || (this.provisional ? {
+      const provisionalAnchor = this.provisional ? {
         road: this.provisional.road, fix: this.provisional.fix,
         elapsed: this.provisional.elapsed || 0, reference: this.provisional.reference || 0,
-        assumed: !!this.provisional.assumed, provisional: true } : null);
+        assumed: !!this.provisional.assumed, provisional: true } : null;
+      const anchor = this.committed || (this.timingFromMainline ? provisionalAnchor :
+        this.approachAnchor || provisionalAnchor);
       if (anchor) {
         this.gapAnchor = { ...anchor, id: ++this.gapSequence };
         this.gapStart = anchor.fix.time;
@@ -351,6 +375,13 @@ export class Tracker {
 
   decorate(state, time = Date.now()) {
     this.tick(time, false);
+    const gpsStatus = this.gpsStatus;
+    const roadMatchStatus = state.acceptedFix && state.status !== 'identifying' && state.road ?
+      'identified' : state.status === 'identifying' || state.candidateRoad || this.visualRoad ?
+        'checking' : 'unresolved';
+    const timingBasis = this.timingFromMainline ? 'since mainline entry' :
+      this.approachTime != null ? 'since entrance approach' :
+      this.expresswayEntryTime != null ? 'since mainline entry' : state.timingBasis;
     this.state = { ...state, visualRoad: this.visualRoad,
       visualSpeedKmh: state.status === 'stale' ? null : this.visualSpeedKmh,
       visualLimitKmh: state.status === 'stale' ? null : this.visualLimitKmh,
@@ -359,6 +390,10 @@ export class Tracker {
         this.visualLimitAssumed ? 'Assumed 50 km/h reference' : 'OSM maxspeed tag',
       previousDelta: this.previousDelta, completedSession: this.completedSession,
       sessionId: this.sessionId, entryTime: this.entryTime,
+      approachTime: this.approachTime, expresswayEntryTime: this.expresswayEntryTime,
+      mainlineEntryTime: this.expresswayEntryTime, timingBasis,
+      gpsStatus, roadMatchStatus, timingStatus: state.deltaStatus,
+      routeContext: this.visualRoad?.isExpressway ? this.visualRoad : this.lastLiveState?.road || null,
       lastValidDeltaSeconds: this.lastValidDeltaSeconds,
       lastValidDeltaAt: this.lastValidDeltaAt,
       deltaStatus: this.sessionId == null && state.deltaStatus !== 'live' ? 'not-started' : state.deltaStatus };
@@ -367,26 +402,14 @@ export class Tracker {
 
   tick(now = Date.now(), updateState = true) {
     const time = timestampMs(now);
-    let expiredActive = false;
     if (this.previousDelta && Number.isFinite(time) && time >= this.previousDelta.expiresAt) {
       const prior = this.previousDelta;
-      if (!this.completedSession || this.completedSession.sessionId !== prior.sessionId)
+      if (this.sessionId !== prior.sessionId &&
+          (!this.completedSession || this.completedSession.sessionId !== prior.sessionId))
         this.completedSession = { sessionId: prior.sessionId, entryTime: this.entryTime,
           exitTime: null, confirmationTime: time, finalDeltaSeconds: null,
           finalTimingStatus: 'incomplete', lastValidDeltaSeconds: prior.value,
           lastValidDeltaAt: prior.lastValidAt, status: 'expired-previous-road' };
-      if (this.sessionId === prior.sessionId && this.state?.deltaStatus !== 'live') {
-        expiredActive = true;
-        this.committed = null;
-        this.gapAnchor = null;
-        this.sessionId = null;
-        this.entryTime = null;
-        this.lastLiveState = null;
-        this.lastValidDeltaSeconds = null;
-        this.lastValidDeltaAt = null;
-        this.currentRoad = this.byId.get(this.visualRoad?.id) ||
-          this.localRoads.find(r => r.id === this.visualRoad?.id) || null;
-      }
       this.previousDelta = null;
     }
     if (updateState) this.state = { ...this.state, previousDelta: this.previousDelta,
@@ -395,9 +418,20 @@ export class Tracker {
       entryTime: this.entryTime,
       lastValidDeltaSeconds: this.lastValidDeltaSeconds,
       lastValidDeltaAt: this.lastValidDeltaAt,
-      deltaStatus: expiredActive ? 'not-started' : this.state.deltaStatus,
+      deltaStatus: this.state.deltaStatus,
       elapsedClockSeconds: this.entryTime == null ? null : Math.max(0, (time - this.entryTime) / 1000) };
     return this.state;
+  }
+
+  diagnosticSnapshot() {
+    return { lastFix: this.lastFixDiagnostic, candidates: this.candidateDiagnostics,
+      state: { status: this.state.status, reason: this.state.reason,
+        gpsStatus: this.state.gpsStatus, roadMatchStatus: this.state.roadMatchStatus,
+        timingStatus: this.state.timingStatus, approachTime: this.approachTime,
+        expresswayEntryTime: this.expresswayEntryTime, sessionId: this.sessionId,
+        gapAnchorRoadId: this.gapAnchor?.road.id || null,
+        reconstructionStatus: this.reconstructionStatus,
+        rampTransition: this.rampTransition } };
   }
 
   connected(from, to) {
@@ -405,7 +439,7 @@ export class Tracker {
   }
 
   successors(road) {
-    return [...(this.edges.get(road?.id) || [])].map(id => this.byId.get(id)).filter(Boolean);
+    return [...(this.edges.get(road?.id) || [])].map(id => this.routeById.get(id)).filter(Boolean);
   }
 
   forwardPath(from, to) {
@@ -464,7 +498,8 @@ export class Tracker {
       limitAt(road, Math.min(length, edge + 0.01)))) return true;
     if (limitAt(road, Math.max(0, before)) !== limitAt(road, Math.min(length, after))) return true;
     if (before < 0) for (const id of this.predecessors.get(road.id) || []) {
-      const previous = this.byId.get(id);
+      const previous = this.routeById.get(id);
+      if (!previous) continue;
       if (limitAt(previous, Math.max(0, (previous.lengthM || roadLengthM(previous)) - 0.01)) !== limitAt(road, 0)) return true;
     }
     if (after > length) for (const next of this.successors(road))
@@ -553,16 +588,21 @@ export class Tracker {
         (path.fromRoadId === priorRoad.id || this.forwardPath(priorRoad, this.byId.get(path.fromRoadId))) :
         path.kind === 'joining' && priorRoad &&
         (path.fromRoadId === priorRoad.id || this.rampLinks.has(priorRoad.id))));
-    const outcomes = new Map();
-    for (const path of paths) outcomes.set(`${path.kind}:${path.fromRoadId}:${path.toRoadId}`, path);
-    const unique = [...outcomes.values()];
-    const chosen = unique.length === 1 ? unique[0] : null;
+    const outcomes = new Set(paths.map(path => `${path.kind}:${this.byId.get(path.fromRoadId)?.ref || path.fromRoadId}:${this.byId.get(path.toRoadId)?.ref || path.toRoadId}`));
+    const chosen = outcomes.size === 1 ? paths[0] : null;
+    const boundaryKeys = new Set(paths.map(path => JSON.stringify([
+      path.kind === 'joining' ? path.endCoordinate : path.startCoordinate,
+      path.kind === 'joining' ? path.toRoadId : path.fromRoadId,
+      path.kind === 'joining' ? path.linkIds.at(-1) : path.linkIds[0]])));
+    const exactBoundary = chosen && boundaryKeys.size === 1;
     return { classification: chosen?.kind || 'unknown', confidence: 'provisional',
       originRef: this.byId.get(chosen?.fromRoadId)?.ref || null,
       destinationRef: this.byId.get(chosen?.toRoadId)?.ref || null,
       fromRoadId: chosen?.fromRoadId || null, toRoadId: chosen?.toRoadId || null,
-      linkIds: chosen?.linkIds || [], pathCount: unique.length,
-      boundary: chosen ? { coordinate: chosen.kind === 'joining' ? chosen.endCoordinate : chosen.startCoordinate,
+      linkIds: chosen ? [...new Set(paths.flatMap(path => path.linkIds || []))] : [],
+      pathCount: outcomes.size, exactPathCount: paths.length,
+      candidatePathIds: paths.map(path => `${path.fromRoadId}:${path.linkIds.join(',')}:${path.toRoadId}`),
+      boundary: exactBoundary ? { coordinate: chosen.kind === 'joining' ? chosen.endCoordinate : chosen.startCoordinate,
         provenance: this.rampGraph.source || 'exact directed OSM shared nodes',
         timing: 'unobserved', estimatedTime: null } : null };
   }
@@ -593,6 +633,10 @@ export class Tracker {
     const latitude = fix?.latitude == null ? NaN : Number(fix.latitude);
     const longitude = fix?.longitude == null ? NaN : Number(fix.longitude);
     const accuracy = fix?.accuracy == null ? NaN : Number(fix.accuracy);
+    this.lastFixDiagnostic = { time: Number.isFinite(time) ? time : null,
+      latitude: Number.isFinite(latitude) ? latitude : null,
+      longitude: Number.isFinite(longitude) ? longitude : null,
+      accuracy: Number.isFinite(accuracy) ? accuracy : null };
     if (!Number.isFinite(time) || !Number.isFinite(latitude) || !Number.isFinite(longitude) ||
         Math.abs(latitude) > 90 || Math.abs(longitude) > 180 ||
         !Number.isFinite(accuracy) || accuracy < 0 || accuracy > this.options.maxAccuracyM) {
@@ -604,6 +648,7 @@ export class Tracker {
       this.beginGap();
     }
     this.lastTime = time;
+    this.gpsStatus = accuracy <= 30 ? 'fresh' : 'weak';
     this.lastAcceptedFixAt = Date.now();
     this.history.push({ time, point: [latitude, longitude], accuracy, heading: fix.heading, speed: fix.speed });
     this.history = this.history.filter(h => time - h.time <= 30000);
@@ -626,6 +671,9 @@ export class Tracker {
         return { ...c, score: c.match.distanceM + (headingUseful ? turn * 0.7 : 0) +
           continuityPenalty - (same ? 5 : next ? 3 : 0), turn };
       }).sort((a, b) => a.score - b.score);
+    this.candidateDiagnostics = candidates.slice(0, 12).map(c => ({ id: c.road.id,
+      score: c.score, distanceM: c.match.distanceM, turnDegrees: c.turn,
+      reason: c.turn > 105 ? 'heading mismatch' : null }));
     let selected = candidates[0];
     if (!selected || (headingUseful && selected.turn > 105)) {
       this.beginGap();
@@ -635,12 +683,14 @@ export class Tracker {
 
     const joiningCandidate = this.rampTransition?.classification === 'joining' ?
       candidates.find(c => c.road.id === this.rampTransition.toRoadId && c.turn <= 45) : null;
-    const continuedMainline = this.currentRoad && this.byId.has(this.currentRoad.id) &&
-      this.rampLinks.has(selected.road.id) &&
-      (this.rampGraph.paths || []).some(path => path.kind === 'joining' &&
-        path.linkIds?.includes(selected.road.id) && path.toRoadId === this.currentRoad.id) ?
-      candidates.find(c => this.byId.has(c.road.id) && this.sameLogicalRoad(this.currentRoad, c.road) &&
-        c.turn <= 45 && c.match.distanceM <= selected.match.distanceM + accuracy + 10) : null;
+    const knownMainline = this.currentRoad && this.byId.has(this.currentRoad.id) &&
+      this.currentRoad.highway !== 'motorway_link' && !this.currentRoad.connector;
+    const continuedMainline = knownMainline && this.rampLinks.has(selected.road.id) ?
+      candidates.find(c => this.byId.has(c.road.id) && c.road.highway !== 'motorway_link' &&
+        this.sameLogicalRoad(this.currentRoad, c.road) && c.turn <= 45 &&
+        c.match.distanceM <= 30 && c.score <= selected.score + Math.max(5, accuracy / 2) &&
+        (!this.previous || c.road.id !== this.currentRoad.id ||
+          c.match.alongM >= this.previous.alongM - 35)) : null;
     const boundaryCoordinate = this.rampTransition?.boundary?.coordinate;
     const mappedJoinNearby = joiningCandidate && boundaryCoordinate && accuracy <= 30 &&
       distanceM(point, [boundaryCoordinate[1], boundaryCoordinate[0]]) <= 100 &&
@@ -650,7 +700,7 @@ export class Tracker {
     const selectedMainline = this.byId.has(selected.road.id);
     const ambiguous = !mappedJoinNearby && !continuedMainline && candidates.find(c => this.byId.has(c.road.id) !== selectedMainline &&
       Math.abs(c.match.distanceM - selected.match.distanceM) < Math.max(5, accuracy / 2) &&
-      c.turn < 65);
+      c.turn < 65 && c.score - selected.score < 12);
     if (ambiguous) {
       this.beginGap();
       this.pending = null;
@@ -660,6 +710,20 @@ export class Tracker {
     this.updateVisual(selected, time, accuracy, speedKmh);
 
     const selectedExpressway = this.byId.has(selected.road.id);
+    const credibleApproach = selected.road.highway === 'motorway_link' &&
+      accuracy <= 30 && selected.match.distanceM <= 30 && headingUseful && selected.turn <= 45 &&
+      (this.rampGraph.paths || []).some(path => path.kind === 'joining' &&
+        path.linkIds?.includes(selected.road.id) && this.byId.has(path.toRoadId));
+    if (credibleApproach && this.approachTime == null && this.expresswayEntryTime == null && !this.committed) {
+      this.approachTime = time;
+      this.entryTime = time;
+      this.entrySource = 'first-joining-ramp-fix';
+      this.entryConfidence = 'provisional';
+      this.sessionId ??= `session-${this.nextSessionId++}`;
+      this.approachAnchor = { road: selected.road,
+        fix: { time, alongM: selected.match.alongM, point }, accuracy,
+        elapsed: 0, reference: 0, assumed: false, provisional: true };
+    }
     if (this.rampLinks.has(selected.road.id)) {
       const existing = this.rampTransition;
       let transition = existing && existing.linkIds.includes(selected.road.id) ? existing :
@@ -695,9 +759,16 @@ export class Tracker {
           boundary: { ...this.rampTransition.boundary, timing: 'estimated', estimatedTime: estimate,
             alongM: boundary.alongM } };
         this.rampTransition = { ...this.rampTransition, boundary: this.joinEvidence.boundary };
+        if (!this.gapAnchor) {
+          this.timingFromMainline = true;
+          this.entryTime = estimate;
+          this.entrySource = 'mapped-ramp-boundary-estimate';
+        }
       }
     }
-    const credibleEntry = selectedExpressway && !this.byId.has(this.currentRoad?.id) &&
+    const credibleEntry = selectedExpressway && selected.road.highway !== 'motorway_link' &&
+      !selected.road.connector && !this.rampLinks.has(selected.road.id) &&
+      !this.byId.has(this.currentRoad?.id) &&
       accuracy <= 30 && selected.match.distanceM <= Math.max(15, accuracy) &&
       headingUseful && selected.turn <= 45;
     if (credibleEntry && !this.provisional && this.reconstructionStatus !== 'unresolved') {
@@ -712,8 +783,11 @@ export class Tracker {
         accuracy, heading, elapsed: this.joinEvidence?.elapsed || 0,
         reference: this.joinEvidence?.reference || 0, assumed: !!this.joinEvidence?.assumed };
       this.sessionId ??= `session-${this.nextSessionId++}`;
-      this.entryTime = this.joinEvidence?.entryTime || time;
-      this.entrySource = this.joinEvidence ? 'mapped-ramp-boundary-estimate' : 'first-mainline-fix';
+      if (this.approachTime == null) {
+        this.entryTime = this.joinEvidence?.entryTime || time;
+        this.entrySource = this.joinEvidence ? 'mapped-ramp-boundary-estimate' : 'first-mainline-fix';
+      }
+      if (!this.gapAnchor || this.joinEvidence) this.expresswayEntryTime = this.joinEvidence?.entryTime || time;
       this.entryConfidence = isTunnel(selected.road, selected.match.alongM) ? 'low' : 'approximate';
       this.entryUncertaintyMs = Math.round(accuracy / Math.max(2, speedMps || 0) * 1000);
     }
@@ -883,8 +957,12 @@ export class Tracker {
       }
       if (selectedExpressway) {
         if (!(currentExpressway && !this.fullSessionAvailable && this.entryTime != null)) {
-          this.entryTime = this.joinEvidence?.entryTime || this.pending.firstTime;
-          this.entrySource = this.joinEvidence ? 'mapped-ramp-boundary-estimate' : 'first-mainline-fix';
+          if (this.approachTime == null) {
+            this.entryTime = this.joinEvidence?.entryTime || this.pending.firstTime;
+            this.entrySource = this.joinEvidence ? 'mapped-ramp-boundary-estimate' : 'first-mainline-fix';
+          }
+          if (!this.gapAnchor || this.joinEvidence)
+            this.expresswayEntryTime = this.joinEvidence?.entryTime || this.pending.firstTime;
           this.entryConfidence = isTunnel(this.pending.firstRoad, this.pending.firstMatch.alongM) ||
             this.pending.firstAccuracy > 40 ? 'low' : 'approximate';
           this.entryUncertaintyMs = Math.round(this.pending.firstAccuracy / Math.max(2, speedMps || 0) * 1000);
@@ -904,12 +982,17 @@ export class Tracker {
     const { road, match } = selected;
     if (!selectedExpressway) {
       if (this.sessionId && !this.committed && !this.gapAnchor) {
-        this.provisional = null;
-        this.sessionId = null;
-        this.entryTime = null;
-        this.entrySource = null;
-        this.entryConfidence = null;
-        this.entryUncertaintyMs = null;
+        if (!credibleApproach) {
+          this.provisional = null;
+          this.sessionId = null;
+          this.entryTime = null;
+          this.approachTime = null;
+          this.approachAnchor = null;
+          this.expresswayEntryTime = null;
+          this.entrySource = null;
+          this.entryConfidence = null;
+          this.entryUncertaintyMs = null;
+        }
       }
       this.currentRoad = road;
       this.previous = { time, alongM: match.alongM, point };
@@ -980,7 +1063,10 @@ export class Tracker {
     this.currentRoad = road;
     this.previous = { time, alongM: match.alongM, point };
     this.reacquiring = false;
-    if (this.rampTransition?.toRoadId === road.id && this.deltaValid) {
+    if (this.rampTransition && accuracy <= 30 && match.distanceM <= 30 &&
+        selected.turn <= 45 && road.highway !== 'motorway_link' &&
+        (this.rampTransition.toRoadId === road.id ||
+          (this.rampTransition.destinationRef && this.rampTransition.destinationRef === road.ref))) {
       this.rampTransition = null;
       this.rampFirstFix = null;
       this.lastRampFix = null;

@@ -18,6 +18,48 @@ const start = (tracker, r, metres = 100) => {
   return tracker.update(at(r, metres, 1000));
 };
 
+test('joining ramp approach is a provisional clock with separate mainline evidence', () => {
+  const local = { id: 'street', highway: 'residential', speedLimit: 50,
+    coordinates: [[103.899, 1.35], [103.9, 1.35]] };
+  const ramp = { id: 'join', highway: 'motorway_link', speedLimit: 50, oneway: true,
+    coordinates: [[103.9, 1.35], [103.901, 1.35]] };
+  const main = { ...road, id: 'main', coordinates: [[103.901, 1.35], [103.91, 1.35]] };
+  const tracker = new Tracker({ roads: [main], localRoads: [local, ramp], rampGraph: {
+    links: [{ id: 'join' }], paths: [{ kind: 'joining', fromRoadId: 'street',
+      toRoadId: 'main', linkIds: ['join'], endCoordinate: [103.901, 1.35] }] } });
+  const approach = tracker.update(at(ramp, 30, 0));
+  assert.equal(approach.approachTime, epoch);
+  assert.equal(approach.expresswayEntryTime, null);
+  assert.equal(approach.deltaSeconds, null);
+  assert.equal(approach.timingBasis, 'since entrance approach');
+  assert.equal(approach.roadMatchStatus, 'checking');
+  tracker.invalidate('GPS unavailable');
+  assert.equal(tracker.state.gpsStatus, 'unavailable');
+  assert.equal(tracker.diagnosticSnapshot().state.gapAnchorRoadId, 'join');
+  tracker.reset();
+  assert.equal(tracker.state.approachTime, undefined);
+});
+
+test('same expressway transfer outcome keeps distinct physical boundaries unresolved', () => {
+  const first = { ...road, id: 'first', ref: 'ECP', nextRoadIds: ['second'] };
+  const second = { ...road, id: 'second', ref: 'ECP' };
+  const target = { ...road, id: 'target', ref: 'KPE' };
+  const ramp = { id: 'branch', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.902, 1.35], [103.903, 1.349]] };
+  const tracker = new Tracker({ roads: [first, second, target], localRoads: [ramp],
+    rampGraph: { links: [{ id: 'branch' }], paths: [
+      { kind: 'transfer', fromRoadId: 'first', toRoadId: 'target',
+        linkIds: ['branch', 'tail-a'], startCoordinate: [103.902, 1.35] },
+      { kind: 'transfer', fromRoadId: 'second', toRoadId: 'target',
+        linkIds: ['branch', 'tail-b'], startCoordinate: [103.9022, 1.35] }
+    ] } });
+  const transition = tracker.classifyRamp(ramp, first);
+  assert.equal(transition.classification, 'transfer');
+  assert.equal(transition.pathCount, 1);
+  assert.equal(transition.exactPathCount, 2);
+  assert.equal(transition.boundary, null);
+});
+
 test('matches direction using heading and reports three upcoming exits', () => {
   const tracker = new Tracker({ roads: [road, west] });
   const state = start(tracker, road);
@@ -67,7 +109,7 @@ test('bad fix and long GPS gap invalidate accumulated delta', () => {
   assert.equal(reacquired.deltaSeconds, null);
   const resumed = tracker.update(at(road, 180, 9000));
   assert.ok(Number.isFinite(resumed.deltaSeconds));
-  assert.equal(resumed.timingBasis, 'since detection');
+  assert.equal(resumed.timingBasis, 'since mainline entry');
 });
 
 test('tunnel reduces confidence', () => {
@@ -237,7 +279,7 @@ test('long tunnel gap reconstructs unique same-chain route and original session'
   const after = tracker.update(at(c, 320, 161000));
   assert.equal(after.status, 'tracking');
   assert.equal(after.entryTime, entry);
-  assert.equal(after.timingBasis, 'since detection');
+  assert.equal(after.timingBasis, 'since mainline entry');
   assert.equal(after.fullSessionAvailable, true);
   assert.ok(after.elapsedSeconds > 150);
   assert.ok(Number.isFinite(after.deltaSeconds));
@@ -328,7 +370,7 @@ test('one credible mainline fix survives a tunnel outage and anchors recovered s
   assert.equal(recovered.status, 'tracking');
   assert.equal(recovered.entryTime, epoch);
   assert.equal(recovered.reconstructionStatus, 'reconstructed');
-  assert.equal(recovered.timingBasis, 'since detection');
+  assert.equal(recovered.timingBasis, 'since mainline entry');
   assert.ok(Number.isFinite(recovered.deltaSeconds));
 });
 
@@ -406,8 +448,7 @@ test('unproven local road switch archives only after visual retention window', (
   assert.equal(done.sessionId, live.sessionId);
   assert.equal(done.completedSession, null);
   const expired = tracker.tick(epoch + 37000);
-  assert.equal(expired.completedSession.sessionId, live.sessionId);
-  assert.equal(expired.completedSession.status, 'expired-previous-road');
+  assert.equal(expired.completedSession, null);
 });
 
 test('mapped leaving ramp archives delta at divergence before confirmation', () => {
@@ -468,8 +509,18 @@ test('mapped joining ramp estimates entry before first mainline fix', () => {
   const joined = tracker.update(at(main, 40, 9000));
   assert.equal(joined.status, 'tracking');
   assert.equal(joined.entrySource, 'mapped-ramp-boundary-estimate');
-  assert.ok(joined.entryTime > epoch + 8000 && joined.entryTime < epoch + 9000);
+  assert.equal(joined.approachTime, epoch + 2000);
+  assert.ok(joined.expresswayEntryTime > epoch + 8000 && joined.expresswayEntryTime < epoch + 9000);
+  assert.equal(joined.entryTime, joined.expresswayEntryTime);
+  assert.equal(joined.timingBasis, 'since mainline entry');
   assert.equal(joined.rampTransition, null);
+  tracker.committed = null;
+  tracker.provisional = { road: main, fix: { time: epoch + 9000, alongM: 40 },
+    elapsed: joined.elapsedSeconds, reference: tracker.referenceSeconds, assumed: false };
+  tracker.invalidate('Immediate tunnel outage');
+  assert.equal(tracker.gapAnchor.road.id, 'main');
+  assert.equal(tracker.gapAnchor.fix.time, epoch + 9000);
+  assert.equal(tracker.state.entryTime, joined.expresswayEntryTime);
 });
 
 test('ambiguous ramp outcomes remain unknown and do not force an exit', () => {
@@ -562,9 +613,10 @@ test('visual road switches after two seconds and previous delta expires on fixed
   assert.ok(tracker.tick(epoch + 34999).previousDelta);
   const expired = tracker.tick(epoch + 35000);
   assert.equal(expired.previousDelta, null);
-  assert.equal(expired.deltaStatus, 'not-started');
-  assert.equal(expired.lastValidDeltaSeconds, null);
-  assert.equal(expired.completedSession.status, 'expired-previous-road');
+  assert.equal(expired.deltaStatus, 'recovering');
+  assert.equal(expired.lastValidDeltaSeconds, live.deltaSeconds);
+  assert.ok(tracker.gapAnchor);
+  assert.equal(expired.completedSession, null);
 });
 
 test('GPS-only outage has no 30 second visual switch deadline', () => {

@@ -26,6 +26,84 @@ test('bundled ramp graph contains real joining, leaving, and multi-link transfer
   }
 });
 
+test('Marina Boulevard ramp has mapped directed MCE approach toward KPE', () => {
+  const path = bundle.rampGraph.paths.find(path => path.kind === 'joining' &&
+    path.fromRoadId === 'osm-way-649773813' && path.toRoadId === 'osm-way-265150827');
+  assert.ok(path);
+  assert.deepEqual(path.linkIds, [
+    'osm-way-244842555', 'osm-way-265150888', 'osm-way-244842552',
+  ]);
+  assert.ok(path.lengthM > 600 && path.lengthM < 700);
+  assert.equal(byId.get(path.toRoadId).ref, 'MCE');
+  assert.ok(local.roads.some(road => road.id === path.linkIds[0]));
+  assert.ok(byId.has('osm-way-633601611'));
+});
+
+test('shared ECP to KPE ramp identifies transfer but withholds ambiguous physical boundary', () => {
+  const path = bundle.rampGraph.paths.find(path => path.kind === 'transfer' &&
+    path.fromRoadId === 'osm-way-670121242' && path.toRoadId === 'osm-way-633601611');
+  assert.ok(path);
+  const alternate = { ...path, linkIds: [path.linkIds[0], 'alternate-tail'],
+    startCoordinate: [path.startCoordinate[0] + .0001, path.startCoordinate[1]] };
+  const graph = { ...bundle.rampGraph,
+    links: [...bundle.rampGraph.links, { ...bundle.rampGraph.links.find(link => link.id === path.linkIds.at(-1)), id: 'alternate-tail' }],
+    paths: [path, alternate] };
+  const tracker = new Tracker({ roads: [byId.get(path.fromRoadId), byId.get(path.toRoadId)],
+    localRoads: local.roads.filter(road => path.linkIds.includes(road.id)), rampGraph: graph });
+  const transition = tracker.classifyRamp(local.roads.find(road => road.id === path.linkIds[0]), byId.get(path.fromRoadId));
+  assert.equal(transition.classification, 'transfer');
+  assert.equal(transition.originRef, 'ECP');
+  assert.equal(transition.destinationRef, 'KPE');
+  assert.equal(transition.pathCount, 1);
+  assert.equal(transition.exactPathCount, 2);
+  assert.equal(transition.boundary, null);
+});
+
+test('confirmed TPE mainline remains visual road beside a six-metre parallel exit ramp', () => {
+  const mainline = byId.get('osm-way-756847962');
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  const at = (fraction, ms) => tracker.update({
+    ...sampleAt(mainline, roadLengthM(mainline) * fraction),
+    accuracy: 5, speed: 15, timestamp: base + ms,
+  });
+  at(.2, 0);
+  const live = at(.7, 2000);
+  assert.equal(live.status, 'tracking');
+  const besideRamp = at(.9, 4000);
+  const candidate = tracker.diagnosticSnapshot().candidates.find(c => c.id === 'osm-way-139718132');
+  assert.ok(candidate?.distanceM < 10);
+  assert.equal(besideRamp.visualRoad.id, mainline.id);
+  assert.equal(besideRamp.status, 'tracking');
+  assert.equal(besideRamp.previousDelta, null);
+  assert.equal(besideRamp.sessionId, live.sessionId);
+});
+
+test('pre-mainline Marina Boulevard ramp anchor survives long GPS gap into downstream KPE', () => {
+  const ramp = local.roads.find(road => road.id === 'osm-way-244842555');
+  const kpe = byId.get('osm-way-633601611');
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  const at = (road, distance, ms) => tracker.update({ ...sampleAt(road, distance),
+    accuracy: 5, speed: 22, timestamp: base + ms });
+  const approach = at(ramp, roadLengthM(ramp) / 2, 0);
+  assert.equal(approach.approachTime, base);
+  assert.equal(approach.mainlineEntryTime, null);
+  assert.equal(approach.deltaSeconds, null);
+  tracker.invalidate('Tunnel GPS unavailable');
+  const first = at(kpe, 80, 180000);
+  assert.equal(first.approachTime, base);
+  assert.equal(first.deltaSeconds, null);
+  const recovered = at(kpe, 120, 182000);
+  assert.equal(recovered.status, 'tracking');
+  assert.equal(recovered.entryTime, base);
+  assert.equal(recovered.approachTime, base);
+  assert.equal(recovered.mainlineEntryTime, null);
+  assert.equal(recovered.timingBasis, 'since entrance approach');
+  assert.equal(recovered.reconstructionStatus, 'reconstructed');
+  assert.ok(Number.isFinite(recovered.deltaSeconds));
+});
+
 test('bundled geometry covers all ten expressway references with valid connected segments', () => {
   assert.deepEqual([...new Set(bundle.roads.map(road => road.ref))].sort(), refs);
   for (const road of bundle.roads) {
@@ -190,7 +268,7 @@ test('mainline entry buffers earliest credible fix through six-second confirmati
   assert.equal(confirmed.entrySource, 'first-mainline-fix');
   assert.equal(confirmed.entryConfidence, 'approximate');
   assert.equal(confirmed.elapsedClockSeconds, 6);
-  assert.equal(confirmed.timingBasis, 'since detection');
+  assert.equal(confirmed.timingBasis, 'since mainline entry');
 });
 
 test('tunnel GPS loss keeps road and entry context without fabricated readings', () => {
@@ -214,7 +292,7 @@ test('tunnel GPS loss keeps road and entry context without fabricated readings',
   const reacquired = tracker.update(fix(150, 6000));
   assert.equal(reacquired.road.id, road.id);
   assert.equal(reacquired.entryTime, confirmed.entryTime);
-  assert.equal(reacquired.timingBasis, 'since detection');
+  assert.equal(reacquired.timingBasis, 'since mainline entry');
   assert.ok(Number.isFinite(reacquired.deltaSeconds));
   assert.ok(reacquired.elapsedSeconds > confirmed.elapsedSeconds);
 });
@@ -241,7 +319,7 @@ test('long unique directed-chain tunnel gap restores original entry timing', () 
   assert.equal(after.road.id, b.id);
   assert.equal(after.entryTime, base);
   assert.equal(after.elapsedClockSeconds, 181);
-  assert.equal(after.timingBasis, 'since detection');
+  assert.equal(after.timingBasis, 'since mainline entry');
   assert.ok(after.elapsedSeconds >= 181);
   assert.ok(Number.isFinite(after.deltaSeconds));
   assert.ok(after.elapsedSeconds > before.elapsedSeconds);
@@ -297,7 +375,7 @@ test('brief ramp candidate does not replace confirmed mainline or accrue time', 
   assert.equal(returned.road.id, mainline.id);
   assert.equal(returned.entryTime, confirmed.entryTime);
   assert.equal(returned.deltaStatus, 'live');
-  assert.equal(returned.timingBasis, 'since detection');
+  assert.equal(returned.timingBasis, 'since mainline entry');
   assert.ok(Math.abs(returned.deltaSeconds -
     (4 - (roadLengthM(mainline) * .35) / (90 / 3.6))) < .1);
 });
@@ -342,7 +420,7 @@ test('bundled MCE to KPE connection keeps entry and delta without switch hold', 
   assert.equal(after.entryTime, before.entryTime);
   assert.ok(after.elapsedSeconds > before.elapsedSeconds);
   assert.ok(Number.isFinite(after.deltaSeconds));
-  assert.equal(after.timingBasis, 'since detection');
+  assert.equal(after.timingBasis, 'since mainline entry');
 });
 
 test('bundled MCE to KPE GPS gap reconstructs only its directed connection', () => {
@@ -363,7 +441,7 @@ test('bundled MCE to KPE GPS gap reconstructs only its directed connection', () 
   assert.equal(after.road.id, kpe.id);
   assert.equal(after.entryTime, before.entryTime);
   assert.equal(after.elapsedClockSeconds, 181);
-  assert.equal(after.timingBasis, 'since detection');
+  assert.equal(after.timingBasis, 'since mainline entry');
   assert.ok(Number.isFinite(after.deltaSeconds));
 });
 
@@ -445,7 +523,7 @@ test('provisional CTE first fix survives tunnel GPS loss until unique route conf
   assert.equal(confirmed.status, 'tracking');
   assert.equal(confirmed.entryTime, base);
   assert.equal(confirmed.elapsedClockSeconds, 22);
-  assert.equal(confirmed.timingBasis, 'since detection');
+  assert.equal(confirmed.timingBasis, 'since mainline entry');
   assert.ok(Number.isFinite(confirmed.deltaSeconds));
 });
 
@@ -630,7 +708,9 @@ test('two-second visual road switch retains prior delta for one fixed thirty-sec
   assert.equal(tracker.tick(base + 33999).previousDelta.value, live.deltaSeconds);
   const expired = tracker.tick(base + 34000);
   assert.equal(expired.previousDelta, null);
-  assert.equal(expired.completedSession.entryTime, live.entryTime);
+  assert.equal(expired.completedSession, null);
+  assert.equal(expired.entryTime, live.entryTime);
+  assert.equal(expired.sessionId, live.sessionId);
 });
 
 test('compatible mainline return within thirty seconds restores original entry without an exit archive', () => {
@@ -776,11 +856,15 @@ test('real Upper Cross joining ramp starts CTE timing at the mainline boundary',
   at('osm-way-121882988', 20);
   const ramp = at('osm-way-121882988', 80);
   assert.equal(ramp.rampTransition.classification, 'joining');
-  assert.equal(ramp.entryTime, null);
+  assert.equal(ramp.entryTime, base + 4000);
+  assert.equal(ramp.approachTime, base + 4000);
+  assert.equal(ramp.mainlineEntryTime, null);
   assert.equal(ramp.deltaSeconds, null);
   const cte = at('osm-way-174552486', 4);
   assert.equal(cte.status, 'tracking');
-  assert.ok(cte.entryTime >= base + 12_000 && cte.entryTime <= base + 14_000);
+  assert.equal(cte.approachTime, ramp.approachTime);
+  assert.equal(cte.entryTime, cte.mainlineEntryTime);
+  assert.ok(cte.mainlineEntryTime >= base + 12_000 && cte.mainlineEntryTime <= base + 14_000);
   assert.equal(cte.rampTransition, null);
   const successor = at('osm-way-121882983', 30);
   assert.equal(successor.status, 'tracking');
