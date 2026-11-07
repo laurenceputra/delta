@@ -591,7 +591,7 @@ test('exit boundary estimate is withheld for long or inaccurate brackets', () =>
   }
 });
 
-test('visual road switches after two seconds and previous delta expires on fixed deadline', () => {
+test('visual road switches after two seconds; reliable local evidence ends session after twenty seconds', () => {
   const local = { id: 'street', name: 'Street', highway: 'residential', speedLimit: 40,
     coordinates: [[103.9, 1.349], [103.91, 1.349]] };
   const other = { id: 'other', name: 'Other Street', highway: 'residential', speedLimit: 30,
@@ -606,17 +606,21 @@ test('visual road switches after two seconds and previous delta expires on fixed
   assert.equal(switched.visualLimitKmh, 40);
   assert.equal(switched.visualSpeedKmh, 72);
   assert.equal(switched.previousDelta.value, live.deltaSeconds);
-  assert.equal(switched.previousDelta.expiresAt, epoch + 35000);
+  assert.equal(switched.previousDelta.expiresAt, undefined);
   tracker.update(at(other, 100, 6000));
   const changedAgain = tracker.update(at(other, 100, 8000));
-  assert.equal(changedAgain.previousDelta.expiresAt, epoch + 35000);
-  assert.ok(tracker.tick(epoch + 34999).previousDelta);
-  const expired = tracker.tick(epoch + 35000);
-  assert.equal(expired.previousDelta, null);
-  assert.equal(expired.deltaStatus, 'recovering');
-  assert.equal(expired.lastValidDeltaSeconds, live.deltaSeconds);
-  assert.ok(tracker.gapAnchor);
-  assert.equal(expired.completedSession, null);
+  assert.ok(changedAgain.previousDelta);
+  assert.ok(tracker.tick(epoch + 35000).previousDelta);
+  assert.equal(tracker.tick(epoch + 35000).completedSession, null);
+  let state;
+  for (const ms of [10000, 15000, 20000, 25000, 30000, 35000])
+    state = tracker.update(at(other, 100, ms));
+  assert.equal(state.previousDelta, null);
+  assert.equal(state.sessionId, null);
+  assert.equal(state.completedSession.status, 'completed-local-evidence');
+  assert.equal(state.completedSession.exitTime, null);
+  assert.equal(state.completedSession.finalDeltaSeconds, null);
+  assert.equal(tracker.gapAnchor, null);
 });
 
 test('GPS-only outage has no 30 second visual switch deadline', () => {
@@ -627,6 +631,25 @@ test('GPS-only outage has no 30 second visual switch deadline', () => {
   assert.equal(later.previousDelta, null);
   assert.ok(tracker.gapAnchor);
   assert.ok(tracker.sessionId);
+});
+
+test('local departure evidence pauses through invalid GPS and resumes only on new fixes', () => {
+  const local = { id: 'side', name: 'Side Street', highway: 'residential',
+    coordinates: [[103.9, 1.349], [103.91, 1.349]] };
+  const tracker = new Tracker({ roads: [road], localRoads: [local] });
+  start(tracker, road);
+  tracker.update(at(road, 150, 2000));
+  tracker.update(at(local, 100, 3000));
+  tracker.update(at(local, 100, 5000));
+  tracker.update(at(local, 100, 10000));
+  assert.equal(tracker.localEvidenceMs, 5000);
+  tracker.update({ ...at(local, 100, 11000), accuracy: 200 });
+  tracker.tick(epoch + 300000);
+  assert.equal(tracker.localEvidenceMs, 5000);
+  tracker.update(at(local, 100, 301000));
+  assert.equal(tracker.localEvidenceMs, 5000);
+  tracker.update(at(local, 100, 306000));
+  assert.equal(tracker.localEvidenceMs, 10000);
 });
 
 test('unproven local visual switch recovers original session after six seconds', () => {

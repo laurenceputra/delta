@@ -51,13 +51,17 @@ Engine and integration replay tests cover directed route continuity, local-road 
 
 During GPS loss, a confirmed expressway session keeps its elapsed clock and shows the last valid pace in a muted **LAST KNOWN** state with age. Live speed and pace forecasts remain unavailable until the mapped route is recovered from fresh fixes. Last-known exit names and distances are marked stale. A recovered comparison remains an estimate, and an unresolved route cannot claim a full-session pace. A completed expressway segment is archived in Settings and no longer shown as an active delta on local roads.
 
+## App v0.3.7
+
+A reliably detected current road appears after two consistent fixes over two seconds. A prior expressway delta stays visibly paused while the route is checked. It is dismissed only after 20 seconds of reliable evidence for a local road, rather than after a wall-clock timeout; GPS loss alone does not count. Confirmed local roads replace stale ramp labels.
+
 ## App v0.3.6
 
 An entrance approach can anchor an estimated session clock before a confirmed mainline fix. GPS, road identification, and pace status are shown separately so a retained road does not imply a fresh position. Optional local diagnostics are off by default; an explicit Settings control records a bounded in-memory trace that can be exported as JSON or cleared without uploading.
 
 ## App v0.3.5
 
-The dashboard follows a reliably detected current road after two consistent fixes over two seconds. A previous expressway delta can remain muted for up to 30 seconds while the mapped route is checked; it expires on the clock even without another GPS fix. Current GPS speed and the current mapped or assumed limit take precedence over the retained pace. A GPS outage alone does not start this countdown.
+The dashboard follows a reliably detected current road after two consistent fixes over two seconds. Current GPS speed and the current mapped or assumed limit take precedence over a paused prior expressway delta.
 
 ## App v0.3.4
 

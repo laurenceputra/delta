@@ -280,6 +280,8 @@ export class Tracker {
     this.visualLimitKmh = null;
     this.visualLimitAssumed = false;
     this.previousDelta = null;
+    this.localEvidenceMs = 0;
+    this.lastReliableLocal = null;
     this.state = empty('searching');
     return this.state;
   }
@@ -287,11 +289,14 @@ export class Tracker {
   invalidate(reason = 'GPS fix stale', preserveContext = true) {
     if (!preserveContext) this.reset();
     this.gpsStatus = 'unavailable';
+    this.lastReliableLocal = null;
+    this.visualCandidate = null;
     this.beginGap();
     return this.heldState(this.provisional && !this.confirmed ? 'entering' : 'stale', reason);
   }
 
   beginGap() {
+    this.lastReliableLocal = null;
     if (!this.gapAnchor) {
       const provisionalAnchor = this.provisional ? {
         road: this.provisional.road, fix: this.provisional.fix,
@@ -356,7 +361,9 @@ export class Tracker {
             this.lastValidDeltaSeconds != null) {
           this.previousDelta = { value: this.lastValidDeltaSeconds,
             sourceRef: this.committed.road.ref || null, lastValidAt: this.lastValidDeltaAt,
-            expiresAt: time + 30000, sessionId: this.sessionId };
+            sessionId: this.sessionId };
+          this.localEvidenceMs = 0;
+          this.lastReliableLocal = null;
         }
         this.visualRoad = this.roadView(road);
         this.visualCandidate = null;
@@ -371,6 +378,63 @@ export class Tracker {
       this.visualLimitKmh = null;
       this.visualLimitAssumed = false;
     }
+  }
+
+  connectedLocal(a, b) {
+    if (this.sameLogicalRoad(a, b)) return true;
+    if (!a || !b || this.byId.has(a.id) || this.byId.has(b.id)) return false;
+    const av = vertices(a), bv = vertices(b);
+    return av.length > 1 && bv.length > 1 &&
+      [av[0], av.at(-1)].some(p => [bv[0], bv.at(-1)].some(q => distanceM(p, q) <= 20));
+  }
+
+  updateLocalEvidence(selected, time, accuracy) {
+    const road = selected.road;
+    const reliable = accuracy <= 30 && selected.match.distanceM <= 30 && selected.turn <= 45;
+    if (this.byId.has(road.id) && reliable) {
+      this.localEvidenceMs = 0;
+      this.lastReliableLocal = null;
+      return false;
+    }
+    const visualLocal = this.localRoads.find(r => r.id === this.visualRoad?.id);
+    if ((!this.sessionId && !this.gapAnchor) || this.visualRoad?.kind !== 'local' ||
+        road.highway === 'motorway_link' || this.byId.has(road.id) || !reliable ||
+        !this.connectedLocal(this.lastReliableLocal?.road || visualLocal, road)) {
+      this.lastReliableLocal = null;
+      return false;
+    }
+    if (this.lastReliableLocal && this.connectedLocal(this.lastReliableLocal.road, road) &&
+        time - this.lastReliableLocal.time <= this.options.maxGapMs)
+      this.localEvidenceMs += Math.max(0, time - this.lastReliableLocal.time);
+    this.lastReliableLocal = { road, time };
+    return this.localEvidenceMs >= 20000;
+  }
+
+  completeLocalFallback(selected, time, speedKmh) {
+    const prior = this.previousDelta;
+    const completedSession = { sessionId: this.sessionId, entryTime: this.entryTime,
+      approachTime: this.approachTime, exitTime: null, confirmationTime: time,
+      finalDeltaSeconds: null, finalTimingStatus: 'incomplete',
+      lastValidDeltaSeconds: prior?.value ?? this.lastValidDeltaSeconds,
+      lastValidDeltaAt: prior?.lastValidAt ?? this.lastValidDeltaAt,
+      status: 'completed-local-evidence' };
+    return this.finishLocalSession(completedSession, selected, time, speedKmh);
+  }
+
+  finishLocalSession(completedSession, selected, time, speedKmh) {
+    this.reset();
+    this.completedSession = completedSession;
+    this.currentRoad = selected.road;
+    this.visualRoad = this.roadView(selected.road);
+    this.visualSpeedKmh = speedKmh;
+    this.visualLimitKmh = limitAt(selected.road, selected.match.alongM);
+    this.visualLimitAssumed = limitAssumedAt(selected.road, selected.match.alongM);
+    this.gpsStatus = 'fresh';
+    this.lastTime = time;
+    this.lastAcceptedFixAt = Date.now();
+    return this.decorate({ ...empty('local'), road: this.visualRoad,
+      speedKmh, limitKmh: this.visualLimitKmh, limitAssumed: this.visualLimitAssumed,
+      completedSession, acceptedFix: true, lastAcceptedFixAt: this.lastAcceptedFixAt }, time);
   }
 
   decorate(state, time = Date.now()) {
@@ -402,16 +466,6 @@ export class Tracker {
 
   tick(now = Date.now(), updateState = true) {
     const time = timestampMs(now);
-    if (this.previousDelta && Number.isFinite(time) && time >= this.previousDelta.expiresAt) {
-      const prior = this.previousDelta;
-      if (this.sessionId !== prior.sessionId &&
-          (!this.completedSession || this.completedSession.sessionId !== prior.sessionId))
-        this.completedSession = { sessionId: prior.sessionId, entryTime: this.entryTime,
-          exitTime: null, confirmationTime: time, finalDeltaSeconds: null,
-          finalTimingStatus: 'incomplete', lastValidDeltaSeconds: prior.value,
-          lastValidDeltaAt: prior.lastValidAt, status: 'expired-previous-road' };
-      this.previousDelta = null;
-    }
     if (updateState) this.state = { ...this.state, previousDelta: this.previousDelta,
       completedSession: this.completedSession,
       sessionId: this.sessionId,
@@ -645,6 +699,7 @@ export class Tracker {
     if (this.lastTime != null && time <= this.lastTime)
       return this.decorate({ ...this.state, acceptedFix: false, lastAcceptedFixAt: this.lastAcceptedFixAt }, time);
     if (this.lastTime != null && time - this.lastTime > this.options.maxGapMs) {
+      this.visualCandidate = null;
       this.beginGap();
     }
     this.lastTime = time;
@@ -676,6 +731,8 @@ export class Tracker {
       reason: c.turn > 105 ? 'heading mismatch' : null }));
     let selected = candidates[0];
     if (!selected || (headingUseful && selected.turn > 105)) {
+      this.lastReliableLocal = null;
+      this.visualCandidate = null;
       this.beginGap();
       this.pending = null;
       return this.heldState('identifying', 'No reliable road match', speedKmh, null, time, true);
@@ -702,12 +759,15 @@ export class Tracker {
       Math.abs(c.match.distanceM - selected.match.distanceM) < Math.max(5, accuracy / 2) &&
       c.turn < 65 && c.score - selected.score < 12);
     if (ambiguous) {
+      this.lastReliableLocal = null;
+      this.visualCandidate = null;
       this.beginGap();
       this.pending = null;
       return this.heldState('identifying', 'Road level ambiguous', speedKmh, null, time, true);
     }
 
     this.updateVisual(selected, time, accuracy, speedKmh);
+    const localEvidenceComplete = this.updateLocalEvidence(selected, time, accuracy);
 
     const selectedExpressway = this.byId.has(selected.road.id);
     const credibleApproach = selected.road.highway === 'motorway_link' &&
@@ -865,31 +925,19 @@ export class Tracker {
               timing: boundary.timing, estimatedTime: boundary.estimatedTime,
               uncertaintyMs: boundary.uncertaintyMs ?? null } : null,
             status: 'completed-with-gap' };
-          this.gapAnchor = null;
-          this.provisional = null;
-          this.sessionId = null;
-          this.entryTime = null;
-          this.entrySource = null;
-          this.entryConfidence = null;
-          this.entryUncertaintyMs = null;
-          this.confirmed = true;
-          this.currentRoad = selected.road;
-          this.previous = { time, alongM: selected.match.alongM, point };
-          this.reconstructionStatus = 'none';
-          this.lastLiveState = null;
-          this.committed = null;
-          this.recoveryCandidate = null;
-          this.gapStart = null;
-          this.elapsedSeconds = 0;
-          this.referenceSeconds = 0;
-          this.deltaValid = false;
-          this.rampTransition = null;
-          this.rampFirstFix = null;
-          this.lastRampFix = null;
-          this.joinEvidence = null;
-        } else return this.heldState(transfer ? 'entering' : 'exiting',
+          return this.finishLocalSession(this.completedSession, selected, time, speedKmh);
+        } else {
+          if (localEvidenceComplete && !unresolvedRamp)
+            return this.completeLocalFallback(selected, time, speedKmh);
+          if (this.visualRoad?.kind === 'local' && !provenExit) {
+            this.rampTransition = null;
+            this.rampFirstFix = null;
+            this.lastRampFix = null;
+          }
+          return this.heldState(transfer ? 'entering' : 'exiting',
           transfer ? 'Following mapped expressway transfer' : 'Confirming expressway exit', speedKmh,
           { id: selected.road.id, name: selected.road.name, kind: 'local' }, time, true);
+        }
       }
     }
     if (this.confirmed && this.committed && !this.sameLogicalRoad(this.currentRoad, selected.road) && !this.gapAnchor) {
@@ -981,6 +1029,11 @@ export class Tracker {
 
     const { road, match } = selected;
     if (!selectedExpressway) {
+      if (this.visualRoad?.kind === 'local') {
+        this.rampTransition = null;
+        this.rampFirstFix = null;
+        this.lastRampFix = null;
+      }
       if (this.sessionId && !this.committed && !this.gapAnchor) {
         if (!credibleApproach) {
           this.provisional = null;

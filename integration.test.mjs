@@ -684,36 +684,165 @@ test('unproven ramp candidate preserves session despite six-second hold', () => 
   assert.equal(completed.rampTransition, null);
 });
 
-test('two-second visual road switch retains prior delta for one fixed thirty-second window', () => {
+test('two-second visual switch needs twenty seconds of reliable local-road evidence to clear journey', () => {
   const mainline = byId.get('osm-way-62272687');
-  const ramp = local.roads.find(road => road.id === 'osm-way-32790032');
-  const tracker = new Tracker({ roads: [mainline], localRoads: [ramp] });
+  const street = { ...local.roads.find(road => road.id === 'osm-way-32790032'),
+    id: 'street-a', name: 'Street A', highway: 'residential' };
+  const tracker = new Tracker({ roads: [mainline], localRoads: [street] });
   const base = 1_800_000_000_000;
   const at = (road, fraction, ms) => tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
     accuracy: 5, speed: 15, timestamp: base + ms });
   at(mainline, .3, 0);
   const live = at(mainline, .5, 1000);
-  const first = at(ramp, .2, 2000);
+  const first = at(street, .2, 2000);
   assert.equal(first.visualRoad.id, mainline.id);
-  assert.equal(first.previousDelta, null);
-  const switched = at(ramp, .6, 4000);
-  assert.equal(switched.visualRoad.id, ramp.id);
+  const switched = at(street, .5, 4000);
+  assert.equal(switched.visualRoad.id, street.id);
   assert.equal(switched.visualSpeedKmh, 54);
-  assert.equal(switched.visualLimitKmh, ramp.speedLimit ?? 50);
   assert.equal(switched.previousDelta.value, live.deltaSeconds);
-  assert.equal(switched.previousDelta.sourceRef, 'TPE');
-  assert.equal(switched.previousDelta.expiresAt, base + 34000);
-  const continued = at(ramp, .9, 6000);
-  assert.equal(continued.previousDelta.expiresAt, switched.previousDelta.expiresAt);
-  assert.equal(tracker.tick(base + 33999).previousDelta.value, live.deltaSeconds);
-  const expired = tracker.tick(base + 34000);
-  assert.equal(expired.previousDelta, null);
-  assert.equal(expired.completedSession, null);
-  assert.equal(expired.entryTime, live.entryTime);
-  assert.equal(expired.sessionId, live.sessionId);
+  assert.equal(tracker.localEvidenceMs, 0);
+  assert.equal(tracker.tick(base + 60000).sessionId, live.sessionId,
+    'wall-clock time alone cannot clear a recoverable journey');
+  at(street, .6, 8000);
+  at(street, .7, 18000);
+  assert.equal(tracker.localEvidenceMs, 14000);
+  const complete = at(street, .9, 28000);
+  assert.equal(complete.status, 'local');
+  assert.equal(complete.completedSession.status, 'completed-local-evidence');
+  assert.equal(complete.completedSession.sessionId, live.sessionId);
+  assert.equal(complete.completedSession.exitTime, null);
+  assert.equal(complete.completedSession.finalDeltaSeconds, null);
+  assert.equal(complete.entryTime, null);
+  assert.equal(complete.approachTime, null);
+  assert.equal(complete.mainlineEntryTime, null);
+  assert.equal(complete.sessionId, null);
+  assert.equal(complete.previousDelta, null);
 });
 
-test('compatible mainline return within thirty seconds restores original entry without an exit archive', () => {
+test('GPS outage before visual switch restarts the two-fix road confirmation', () => {
+  const mainline = byId.get('osm-way-62272687');
+  const street = { ...local.roads.find(road => road.id === 'osm-way-32790032'),
+    id: 'street-a', name: 'Street A', highway: 'residential' };
+  const tracker = new Tracker({ roads: [mainline], localRoads: [street] });
+  const base = 1_800_000_000_000;
+  const at = (road, fraction, ms) => tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+    accuracy: 5, speed: 15, timestamp: base + ms });
+  at(mainline, .3, 0);
+  at(mainline, .5, 1000);
+  at(street, .2, 2000);
+  tracker.invalidate('GPS unavailable');
+  const afterGap = at(street, .5, 10000);
+  assert.equal(afterGap.visualRoad.id, mainline.id);
+  assert.equal(afterGap.previousDelta, null);
+  const switched = at(street, .7, 12000);
+  assert.equal(switched.visualRoad.id, street.id);
+  assert.equal(tracker.localEvidenceMs, 0);
+});
+
+test('GPS gap after local switch pauses reliable-road evidence and cannot count missing time', () => {
+  const mainline = byId.get('osm-way-62272687');
+  const street = { ...local.roads.find(road => road.id === 'osm-way-32790032'),
+    id: 'street-a', name: 'Street A', highway: 'residential' };
+  const tracker = new Tracker({ roads: [mainline], localRoads: [street] });
+  const base = 1_800_000_000_000;
+  const at = (road, fraction, ms) => tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+    accuracy: 5, speed: 15, timestamp: base + ms });
+  at(mainline, .3, 0);
+  const live = at(mainline, .5, 1000);
+  at(street, .2, 2000);
+  at(street, .5, 4000);
+  at(street, .6, 8000);
+  assert.equal(tracker.localEvidenceMs, 4000);
+  tracker.invalidate('GPS unavailable');
+  const resumed = at(street, .7, 40000);
+  assert.equal(resumed.sessionId, live.sessionId);
+  assert.equal(resumed.previousDelta.value, live.deltaSeconds);
+  assert.equal(tracker.localEvidenceMs, 4000);
+  const later = at(street, .8, 50000);
+  assert.equal(later.completedSession, null);
+  assert.equal(tracker.localEvidenceMs, 14000);
+  const complete = at(street, .9, 56000);
+  assert.equal(complete.completedSession.status, 'completed-local-evidence');
+});
+
+test('endpoint-connected named streets contribute to one reliable local departure window', () => {
+  const mainline = byId.get('osm-way-62272687');
+  const streetA = { ...local.roads.find(road => road.id === 'osm-way-32790032'),
+    id: 'street-a', name: 'Street A', highway: 'residential' };
+  const end = streetA.coordinates.at(-1), prior = streetA.coordinates.at(-2);
+  const streetB = { ...streetA, id: 'street-b', name: 'Street B',
+    coordinates: [end, [end[0] + end[0] - prior[0], end[1] + end[1] - prior[1]]] };
+  const tracker = new Tracker({ roads: [mainline], localRoads: [streetA, streetB] });
+  const base = 1_800_000_000_000;
+  const at = (road, fraction, ms) => tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+    accuracy: 5, speed: 15, timestamp: base + ms });
+  at(mainline, .3, 0);
+  at(mainline, .5, 1000);
+  at(streetA, .2, 2000);
+  at(streetA, .5, 4000);
+  at(streetA, .6, 8000);
+  assert.equal(tracker.localEvidenceMs, 4000);
+  at(streetB, .2, 10000);
+  const onSecondStreet = at(streetB, .8, 18000);
+  assert.equal(onSecondStreet.visualRoad.id, streetB.id);
+  assert.equal(tracker.localEvidenceMs, 14000);
+  const complete = at(streetB, .9, 24000);
+  assert.equal(complete.completedSession.status, 'completed-local-evidence');
+});
+
+test('weak local GPS fix pauses departure evidence without crediting the uncertain interval', () => {
+  const mainline = byId.get('osm-way-62272687');
+  const street = { ...local.roads.find(road => road.id === 'osm-way-32790032'),
+    id: 'street-a', name: 'Street A', highway: 'residential' };
+  const tracker = new Tracker({ roads: [mainline], localRoads: [street] });
+  const base = 1_800_000_000_000;
+  const at = (road, fraction, ms, accuracy = 5) => tracker.update({
+    ...sampleAt(road, roadLengthM(road) * fraction), accuracy, speed: 15, timestamp: base + ms });
+  at(mainline, .3, 0);
+  at(mainline, .5, 1000);
+  at(street, .2, 2000);
+  at(street, .5, 4000);
+  at(street, .6, 8000);
+  assert.equal(tracker.localEvidenceMs, 4000);
+  at(street, .7, 10000, 70);
+  const resumed = at(street, .8, 20000);
+  assert.equal(resumed.completedSession, null);
+  assert.equal(tracker.localEvidenceMs, 4000);
+  at(street, .9, 30000);
+  assert.equal(tracker.localEvidenceMs, 14000);
+});
+
+test('stale transfer context cannot block twenty-second reliable local departure cleanup', () => {
+  const lastLink = local.roads.find(road => road.id === 'osm-way-528189241');
+  const end = lastLink.coordinates.at(-1), prior = lastLink.coordinates.at(-2);
+  const street = { ...lastLink, id: 'street-after-transfer', name: 'Street After Transfer',
+    highway: 'residential', coordinates: [end,
+      [end[0] + 3 * (end[0] - prior[0]), end[1] + 3 * (end[1] - prior[1])]] };
+  const tracker = new Tracker({ ...layered, localRoads: [...local.roads, street] });
+  const base = 1_800_000_000_000;
+  const at = (id, fraction, ms) => {
+    const road = id === street.id ? street : byId.get(id) || local.roads.find(road => road.id === id);
+    return tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+      accuracy: 5, speed: 15, timestamp: base + ms });
+  };
+  at('osm-way-670121242', .2, 0);
+  const live = at('osm-way-670121242', .7, 1000);
+  at('osm-way-32605139', .2, 2000);
+  at('osm-way-140562826', .2, 4000);
+  const transfer = at(lastLink.id, .2, 6000);
+  assert.equal(transfer.rampTransition.classification, 'transfer');
+  at(street.id, .2, 8000);
+  at(street.id, .6, 10000);
+  at(street.id, .7, 20000);
+  const complete = at(street.id, .9, 30000);
+  assert.equal(complete.status, 'local');
+  assert.equal(complete.completedSession.status, 'completed-local-evidence');
+  assert.equal(complete.completedSession.sessionId, live.sessionId);
+  assert.equal(complete.entryTime, null);
+  assert.equal(complete.previousDelta, null);
+});
+
+test('compatible mainline return before confirmed local departure restores original entry', () => {
   const mainline = byId.get('osm-way-62272687');
   const ramp = local.roads.find(road => road.id === 'osm-way-32790032');
   const tracker = new Tracker({ roads: [mainline], localRoads: [ramp] });
@@ -774,7 +903,7 @@ test('proven TPE exit followed by mapped TPE re-entry starts a new session withi
   at('osm-way-628738331', .2, 10000);
   const exited = at('osm-way-628738331', .7, 12000);
   assert.equal(exited.completedSession.sessionId, original.sessionId);
-  assert.equal(exited.previousDelta.sessionId, original.sessionId);
+  assert.equal(exited.previousDelta, null);
   at('osm-way-655615941', .5, 14000);
   for (const [id, ms] of [
     ['osm-way-349477708', 16000], ['osm-way-726148961', 18000],
@@ -783,9 +912,9 @@ test('proven TPE exit followed by mapped TPE re-entry starts a new session withi
   ]) at(id, .5, ms);
   const reentered = at('osm-way-629360446', .2, 26000);
   assert.notEqual(reentered.sessionId, original.sessionId);
-  assert.equal(reentered.entryTime, base + 26000);
+  assert.ok(reentered.entryTime >= base + 16000 && reentered.entryTime < base + 26000);
   assert.equal(reentered.completedSession.sessionId, original.sessionId);
-  assert.equal(reentered.previousDelta.sessionId, original.sessionId);
+  assert.equal(reentered.previousDelta, null);
 });
 
 test('mapped TPE exit archives the ramp divergence time before six-second confirmation', () => {
