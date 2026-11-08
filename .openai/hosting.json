@@ -1,6 +1,6 @@
 {
   "project_id": "appgprj_6aea81c960f4819186a949db306bb1d0",
-  "static": {
-    "directory": "dist"
-  }
+  "d1": "DIAGNOSTICS_DB",
+  "r2": "DIAGNOSTICS_BUCKET",
+  "capabilities": ["mcp"]
 }

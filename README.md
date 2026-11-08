@@ -1,12 +1,15 @@
 # Delta SG
 
-A Cloudflare-hostable foreground PWA prototype for Singapore road names and GPS speed, with expressway-only reference timing. No paid map APIs, navigation destination, Android Auto integration, or journey upload.
+A Cloudflare-hostable foreground PWA prototype for Singapore road names and GPS speed, with expressway-only reference timing. Optional diagnostics can be recorded locally and explicitly uploaded while parked. No paid map APIs or navigation destination are required.
 
 ## Run
 
-Requires Node 20+ and Python 3 for the development server. No runtime dependencies.
+Requires Node 24+ for the SQLite-backed backend tests. The driving interface remains plain JavaScript; Wrangler provides a local Worker with D1, R2 and static assets.
 
 ```sh
+npm ci
+npm run build
+npm run db:migrate:local
 npm test
 npm run check
 npm run dev
@@ -14,11 +17,11 @@ npm run dev
 
 Open http://localhost:4173. Live device location requires HTTPS (localhost is an exception). A phone needs the deployed HTTPS address; another machine's localhost is not a phone preview. Allow precise location before driving, keep the PWA foregrounded, and use the screen wake lock where supported. Demo controls simulate movement over the same road geometry as live mode.
 
-For a personal Cloudflare account, `npx wrangler deploy` uses `wrangler.jsonc`. Installable manifest, icons, service worker and road bundle are included. The current Sites deployment is public; access is managed through Sites.
+The Sites deployment remains public; the upload API and analysis tools have separate server-side authorization. `wrangler.jsonc` uses placeholder identifiers for local development, not direct production deployment. Publish the generated Worker and assets through the existing Sites project. See [diagnostics operations](docs/diagnostics-operations.md) for hosted configuration, retention and backup.
 
 ## Product behaviour
 
-- Identify mapped public motor roads and ramps using a spatial index, heading and recent fixes. Display GPS speed everywhere; hold a new road candidate for six seconds before changing a confirmed route.
+- Identify mapped public motor roads and ramps using a spatial index, heading and recent fixes. Display GPS speed everywhere; change the visible road after two seconds of reliable evidence while independently retaining timing for recovery.
 - Enable delta and upcoming exits only on confirmed mainlines of the ten expressways. Suppress timing at ambiguous local-road/expressway overlaps.
 - Light, Dark and System themes follow a saved device preference. The separately labelled Screen awake control manages wake lock.
 - Follow the current mainline, show up to three mapped exits ahead, update as exits pass.
@@ -46,6 +49,10 @@ Replay tests validate calculations and data wiring. They do not replace passenge
 ## Validation completed
 
 Engine and integration replay tests cover directed route continuity, local-road transitions, GPS gaps, tunnel reconstruction and ambiguous paths. Chromium checks cover theme persistence, compact live and demo layouts, three visible exits on small screens, and offline assets. These tests use simulated positions, not road measurements.
+
+## App v0.4.0
+
+Diagnostics recording is opt-in and persists bounded gzip chunks in IndexedDB. All local recordings share a 50 MiB budget, expire after seven days, and stop at two hours or the per-recording limits. Successful checksum-verified uploads remove local chunks and retain a small receipt. Upload authorization is separate from owner-only analysis through the Site's MCP tools. Backend setup and retention must be verified before enabling uploads. The memory-only recorder and its old 10,000-event limit have been removed.
 
 ## App v0.3.2
 

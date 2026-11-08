@@ -1,12 +1,27 @@
 {
   "name": "delta-sg",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node dist/engine.test.mjs && node integration.test.mjs",
-    "dev": "python3 -m http.server 4173 --directory dist",
-    "check": "node scripts/build-version.mjs --check && node --check dist/app.js && node --check dist/engine.js && node --check dist/sw.js",
-    "build:version": "node scripts/build-version.mjs"
+    "test": "node dist/engine.test.mjs && node integration.test.mjs && node server/diagnostics.test.mjs && node scripts/replay-diagnostics.test.mjs",
+    "dev": "npm run build && wrangler dev --local --ip 127.0.0.1 --port 4173",
+    "check": "node scripts/build-version.mjs --check && node --check dist/app.js && node --check dist/engine.js && node --check dist/sw.js && node --check dist/diagnostics.js && node --check server/diagnostics.js && node --check scripts/replay-diagnostics.mjs",
+    "build:version": "node scripts/build-version.mjs",
+    "build": "npm run build:version && node scripts/build-site.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply DIAGNOSTICS_DB --local",
+    "test:browser": "node scripts/diagnostics-browser.test.mjs"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.31.10",
+    "esbuild": "^0.25.12",
+    "wrangler": "^4.92.0"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

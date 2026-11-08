@@ -3,3 +3,13 @@ node_modules/
 *.tar.gz
 *.log
 .DS_Store
+dist/client/
+dist/server/
+dist/.openai/
+.dev.vars*
+.env*
+!.env.example
+outputs/
+recordings/
+reports/
+delta-diagnostics-*.json

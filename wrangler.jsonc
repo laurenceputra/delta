@@ -1,5 +1,8 @@
 {
   "name": "delta-sg",
-  "compatibility_date": "2026-11-04",
-  "assets": { "directory": "./dist" }
+  "main": "dist/server/index.js",
+  "compatibility_date": "2026-05-22",
+  "assets": { "directory": "./dist/client", "binding": "ASSETS", "run_worker_first": true },
+  "d1_databases": [{ "binding": "DIAGNOSTICS_DB", "database_name": "delta-diagnostics", "database_id": "00000000-0000-0000-0000-000000000001", "migrations_dir": "drizzle" }],
+  "r2_buckets": [{ "binding": "DIAGNOSTICS_BUCKET", "bucket_name": "delta-diagnostics" }]
 }

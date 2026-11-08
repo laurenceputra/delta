@@ -1,0 +1,1 @@
+ALTER TABLE `diagnostic_chunks` ADD `event_summary` text;
