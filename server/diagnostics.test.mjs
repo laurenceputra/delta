@@ -43,6 +43,19 @@ test('manifest and event limits', () => {
   assert.equal(validateManifest({}), false);
 });
 
+test('upload key configuration requires six characters and still validates the supplied key', async () => {
+  for (const key of ['', '12345', '123456', '1234567']) {
+    const { env } = fixture();
+    env.DIAGNOSTICS_UPLOAD_KEY = key;
+    const response = await handleDiagnostics(request('/api/diagnostics/auth', 'POST', JSON.stringify({ key })), env);
+    assert.equal(response.status, key.length >= 6 ? 204 : 503);
+    if (key.length >= 6) {
+      const rejected = await handleDiagnostics(request('/api/diagnostics/auth', 'POST', JSON.stringify({ key: 'incorrect' })), env);
+      assert.equal(rejected.status, 401);
+    }
+  }
+});
+
 test('owner health verifies the canonical asset URL without exposing recordings', async () => {
   const { env } = fixture();
   env.ASSETS = { fetch: async request => new Response('', { status: new URL(request.url).pathname === '/' ? 200 : 307 }) };

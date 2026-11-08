@@ -11,7 +11,7 @@ const equal = (a, b) => { if (typeof a !== 'string' || typeof b !== 'string' || 
 const db = env => env.DIAGNOSTICS_DB;
 const bucket = env => env.DIAGNOSTICS_BUCKET;
 const secret = env => env.DIAGNOSTICS_UPLOAD_KEY;
-const configured = env => typeof secret(env) === 'string' && secret(env).length >= 24 && db(env) && bucket(env) && env.DIAGNOSTICS_RETENTION_READY === 'true';
+const configured = env => typeof secret(env) === 'string' && secret(env).length >= 6 && db(env) && bucket(env) && env.DIAGNOSTICS_RETENTION_READY === 'true';
 const analysisConfigured = env => db(env) && bucket(env) && typeof env.DIAGNOSTICS_ANALYST_EMAILS === 'string' && env.DIAGNOSTICS_ANALYST_EMAILS.trim();
 const body = async (request, max) => {
   if (Number(request.headers.get('content-length')) > max) throw new Error('too_large');

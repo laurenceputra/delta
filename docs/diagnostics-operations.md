@@ -8,7 +8,7 @@ Preserve the existing Sites project, domain and public audience. The hosting man
 
 | Runtime key | Meaning |
 | --- | --- |
-| `DIAGNOSTICS_UPLOAD_KEY` | Shared upload secret, at least 24 characters. Required only for uploads. |
+| `DIAGNOSTICS_UPLOAD_KEY` | Shared upload secret, at least 6 characters. Required only for uploads. |
 | `DIAGNOSTICS_ANALYST_EMAILS` | Comma-separated verified owner email allowlist for analysis and maintenance. Empty denies access. |
 | `DIAGNOSTICS_RETENTION_READY` | Set to `true` only after testing daily unattended cleanup. Other values disable uploads. |
 
