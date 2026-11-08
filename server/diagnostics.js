@@ -200,7 +200,7 @@ async function mcp(request, env) {
   const content = value => reply({ content: [{ type: 'text', text: JSON.stringify(value) }] });
   if (name === 'diagnostics_health') {
     const tables = await db(env).prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('diagnostic_recordings','diagnostic_chunks','diagnostic_auth_failures')").all();
-    const asset = env.ASSETS ? await env.ASSETS.fetch(new Request('https://assets.internal/index.html')) : null;
+    const asset = env.ASSETS ? await env.ASSETS.fetch(new Request('https://assets.internal/')) : null;
     return content({ schemaReady: tables.results.length === 3, assetsReady: asset?.status === 200,
       uploadsConfigured: !!configured(env), retentionReady: env.DIAGNOSTICS_RETENTION_READY === 'true',
       roadDataVersion: env.ROAD_DATA_VERSION || null });

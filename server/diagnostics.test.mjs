@@ -43,6 +43,18 @@ test('manifest and event limits', () => {
   assert.equal(validateManifest({}), false);
 });
 
+test('owner health verifies the canonical asset URL without exposing recordings', async () => {
+  const { env } = fixture();
+  env.ASSETS = { fetch: async request => new Response('', { status: new URL(request.url).pathname === '/' ? 200 : 307 }) };
+  const response = await handleDiagnostics(request('/mcp', 'POST', JSON.stringify({ jsonrpc: '2.0', id: 1,
+    method: 'tools/call', params: { name: 'diagnostics_health', arguments: {} } }), {
+      'oai-authenticated-user-id': 'owner', 'oai-authenticated-user-email': 'analyst@example.com'
+    }), env);
+  const health = JSON.parse((await response.json()).result.content[0].text);
+  assert.equal(health.schemaReady, true);
+  assert.equal(health.assetsReady, true);
+});
+
 test('two-hour 1440-chunk manifests fit while chunk and body caps remain bounded', async () => {
   const { env } = fixture();
   const now = new Date().toISOString();
