@@ -28,7 +28,7 @@ The Sites deployment remains public; the upload API and analysis tools have sepa
 - Compare actual elapsed time with reference travel time over matched distance. Negative delta means ahead/faster; positive means behind/slower. A positive delta is not permission to exceed the posted speed limit.
 - Starting midway may anchor a provisional clock at the first credible mainline fix, before route confirmation; this is not a physical entrance crossing. If GPS disappears before confirmation, the provisional road and clock remain visible, but speed, delta and exits are withheld until a plausible directed route is confirmed. During a GPS gap, live speed and pace disappear while the entry clock and last confirmed road remain. A unique directed mapped path can restore estimated full-session timing; ambiguous routes keep the entry clock but withhold a full-session pace comparison.
 - Missing or implausible speed tags use a visibly marked assumed 50 km/h reference. The current limit and cumulative use of assumed reference segments are shown separately. Missing exits produce no invented destinations.
-- Forecasts cap projected travel speed at each mapped or assumed future segment limit; actual future traffic and driving may differ.
+- Exit projections assume the current GPS speed continues to each exit; reference time still follows every mapped or assumed speed-limit segment. Projections disappear when stopped or GPS is stale. They are estimates, not a recommended speed.
 - GPS gaps, tunnels, parallel roads and flyovers can prevent dependable tracking. This is advisory software, not a calibrated speedometer or enforcement-compliance assessment.
 
 ## Data and enforcement
@@ -49,6 +49,10 @@ Replay tests validate calculations and data wiring. They do not replace passenge
 ## Validation completed
 
 Engine and integration replay tests cover directed route continuity, local-road transitions, GPS gaps, tunnel reconstruction and ambiguous paths. Chromium checks cover theme persistence, compact live and demo layouts, three visible exits on small screens, and offline assets. These tests use simulated positions, not road measurements.
+
+## App v0.4.2
+
+Exit projections assume the current GPS speed continues, against a reference that follows each mapped limit. Their heading identifies this assumption. Ramp role is separated from downstream destination: shared exit paths can show Leaving PIE while retaining branch uncertainty, and a ramp heading follows the two-second visual confirmation. A shared physical boundary is retained only when all compatible paths agree.
 
 ## App v0.4.0
 

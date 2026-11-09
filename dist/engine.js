@@ -120,18 +120,6 @@ function referenceTime(road, fromM, toM) {
   return seconds;
 }
 
-function cappedForecastTime(road, fromM, toM, speedMps) {
-  if (toM <= fromM) return 0;
-  const breaks = [fromM, toM];
-  for (const zone of road.speedLimits || []) {
-    for (const edge of [zone.fromM ?? zone.startM, zone.toM ?? zone.endM])
-      if (Number.isFinite(edge) && edge > fromM && edge < toM) breaks.push(edge);
-  }
-  breaks.sort((a, b) => a - b);
-  return breaks.slice(1).reduce((sum, edge, i) => sum +
-    (edge - breaks[i]) / Math.min(speedMps, limitAt(road, (breaks[i] + edge) / 2) / 3.6), 0);
-}
-
 function isTunnel(road, at) {
   return road.tunnel === true || (road.tunnels || []).some(z => at >= (z.fromM ?? z.startM ?? 0) && at <= (z.toM ?? z.endM ?? 0));
 }
@@ -634,6 +622,43 @@ export class Tracker {
     return false;
   }
 
+  rampTransitionForPaths(paths) {
+    const unique = values => [...new Set(values)];
+    const origins = unique(paths.map(path => this.byId.get(path.fromRoadId)?.ref || path.fromRoadId));
+    const destinations = unique(paths.map(path => this.byId.get(path.toRoadId)?.ref || path.toRoadId));
+    // A downstream fork does not change whether the observed ramp leaves a mainline.
+    // A leaving/transfer conflict does change the session outcome, so keep it unknown.
+    const outcomes = unique(paths.map(path => `${path.kind}:${path.kind === 'joining' ? '' :
+      this.byId.get(path.fromRoadId)?.ref || path.fromRoadId}`));
+    const classification = outcomes.length === 1 ? paths[0].kind : 'unknown';
+    const fromIds = unique(paths.map(path => path.fromRoadId));
+    const toIds = unique(paths.map(path => path.toRoadId));
+    const first = paths[0]?.linkIds || [];
+    const firstMismatch = first.findIndex((id, index) =>
+      paths.some(path => path.linkIds?.[index] !== id));
+    const linkIds = first.slice(0, firstMismatch < 0 ? first.length : firstMismatch);
+    const boundaryKeys = unique(paths.map(path => JSON.stringify([
+      path.kind === 'joining' ? path.endCoordinate : path.startCoordinate,
+      path.kind === 'joining' ? path.toRoadId : path.fromRoadId,
+      path.kind === 'joining' ? path.linkIds?.at(-1) : path.linkIds?.[0]])));
+    const boundaryCoordinate = paths[0] && (classification === 'joining' ?
+      paths[0].endCoordinate : paths[0].startCoordinate);
+    const exactBoundary = classification !== 'unknown' && boundaryKeys.length === 1 &&
+      Array.isArray(boundaryCoordinate) && boundaryCoordinate.length === 2 &&
+      boundaryCoordinate.every(Number.isFinite);
+    return { classification, confidence: 'provisional',
+      originRef: origins.length === 1 ? this.byId.get(paths[0].fromRoadId)?.ref || null : null,
+      destinationRef: destinations.length === 1 ? this.byId.get(paths[0].toRoadId)?.ref || null : null,
+      fromRoadId: fromIds.length === 1 ? fromIds[0] : null,
+      toRoadId: toIds.length === 1 ? toIds[0] : null,
+      linkIds, pathCount: outcomes.length, exactPathCount: paths.length,
+      candidatePaths: paths,
+      candidatePathIds: paths.map(path => `${path.fromRoadId}:${path.linkIds.join(',')}:${path.toRoadId}`),
+      boundary: exactBoundary ? { coordinate: boundaryCoordinate,
+        provenance: this.rampGraph.source || 'exact directed OSM shared nodes',
+        timing: 'unobserved', estimatedTime: null } : null };
+  }
+
   classifyRamp(road, priorRoad) {
     if (!road || !this.rampLinks.has(road.id)) return null;
     const activeMainline = priorRoad && this.byId.has(priorRoad.id);
@@ -642,23 +667,7 @@ export class Tracker {
         (path.fromRoadId === priorRoad.id || this.forwardPath(priorRoad, this.byId.get(path.fromRoadId))) :
         path.kind === 'joining' && priorRoad &&
         (path.fromRoadId === priorRoad.id || this.rampLinks.has(priorRoad.id))));
-    const outcomes = new Set(paths.map(path => `${path.kind}:${this.byId.get(path.fromRoadId)?.ref || path.fromRoadId}:${this.byId.get(path.toRoadId)?.ref || path.toRoadId}`));
-    const chosen = outcomes.size === 1 ? paths[0] : null;
-    const boundaryKeys = new Set(paths.map(path => JSON.stringify([
-      path.kind === 'joining' ? path.endCoordinate : path.startCoordinate,
-      path.kind === 'joining' ? path.toRoadId : path.fromRoadId,
-      path.kind === 'joining' ? path.linkIds.at(-1) : path.linkIds[0]])));
-    const exactBoundary = chosen && boundaryKeys.size === 1;
-    return { classification: chosen?.kind || 'unknown', confidence: 'provisional',
-      originRef: this.byId.get(chosen?.fromRoadId)?.ref || null,
-      destinationRef: this.byId.get(chosen?.toRoadId)?.ref || null,
-      fromRoadId: chosen?.fromRoadId || null, toRoadId: chosen?.toRoadId || null,
-      linkIds: chosen ? [...new Set(paths.flatMap(path => path.linkIds || []))] : [],
-      pathCount: outcomes.size, exactPathCount: paths.length,
-      candidatePathIds: paths.map(path => `${path.fromRoadId}:${path.linkIds.join(',')}:${path.toRoadId}`),
-      boundary: exactBoundary ? { coordinate: chosen.kind === 'joining' ? chosen.endCoordinate : chosen.startCoordinate,
-        provenance: this.rampGraph.source || 'exact directed OSM shared nodes',
-        timing: 'unobserved', estimatedTime: null } : null };
+    return this.rampTransitionForPaths(paths);
   }
 
   estimateExitBoundary(transition, road, match, time, accuracy) {
@@ -786,23 +795,41 @@ export class Tracker {
     }
     if (this.rampLinks.has(selected.road.id)) {
       const existing = this.rampTransition;
-      let transition = existing && existing.linkIds.includes(selected.road.id) ? existing :
-        this.classifyRamp(selected.road, this.currentRoad);
+      const reliableRampEvidence = accuracy <= 30 && selected.match.distanceM <= 30 &&
+        selected.turn <= 45 && headingUseful;
+      const matchingPaths = existing?.candidatePaths?.filter(path =>
+        path.linkIds?.includes(selected.road.id)) || [];
+      const incompatible = !!existing?.candidatePaths?.length && !matchingPaths.length;
+      let transition = !reliableRampEvidence && existing?.candidatePaths?.length ? existing :
+        incompatible ? { ...existing, classification: 'unknown',
+        confidence: 'provisional', boundary: null, incompatibleRamp: true } :
+        matchingPaths.length && matchingPaths.length === existing?.candidatePaths?.length &&
+        !existing.incompatibleRamp ? existing :
+        matchingPaths.length ? this.rampTransitionForPaths(matchingPaths) :
+          this.classifyRamp(selected.road, this.currentRoad);
+      if (transition !== existing && matchingPaths.length && existing?.boundary?.timing === 'estimated' &&
+          transition.boundary && JSON.stringify(transition.boundary.coordinate) ===
+            JSON.stringify(existing.boundary.coordinate))
+        transition = { ...transition, boundary: existing.boundary };
       if (transition && (!existing || transition !== existing))
         transition = this.estimateExitBoundary(transition, selected.road, selected.match, time, accuracy);
       if (transition) {
-        if (this.rampFirstFix && existing?.classification === transition.classification &&
+        if (reliableRampEvidence && this.rampFirstFix &&
+            existing?.classification === transition.classification &&
             time - this.rampFirstFix.time >= 1000 && transition.classification !== 'unknown')
           transition = { ...transition, confidence: 'confirmed' };
         this.rampTransition = transition;
-        this.rampFirstFix ??= { road: selected.road, match: selected.match, time, accuracy };
-        this.lastRampFix = { road: selected.road, match: selected.match, time, accuracy };
+        if (reliableRampEvidence) {
+          this.rampFirstFix ??= { road: selected.road, match: selected.match, time, accuracy };
+          this.lastRampFix = { road: selected.road, match: selected.match, time, accuracy };
+        }
       }
     }
     if (selectedExpressway && !this.rampLinks.has(selected.road.id) &&
         this.rampTransition?.classification === 'joining' &&
         this.rampTransition.toRoadId === selected.road.id && this.lastRampFix &&
-        this.rampTransition.linkIds.at(-1) === this.lastRampFix.road.id &&
+        this.rampTransition.candidatePaths?.some(path =>
+          path.toRoadId === selected.road.id && path.linkIds?.at(-1) === this.lastRampFix.road.id) &&
         time - this.lastRampFix.time > 0 && time - this.lastRampFix.time <= 5000 &&
         accuracy <= 30 && this.lastRampFix.accuracy <= 30 && headingUseful && selected.turn <= 45) {
       const coordinate = this.rampTransition.boundary?.coordinate;
@@ -902,8 +929,12 @@ export class Tracker {
         const unresolvedRamp = selected.road.highway === 'motorway_link' &&
           this.rampTransition?.classification !== 'leaving';
         const provenExit = this.rampTransition?.classification === 'leaving' &&
-          this.rampFirstFix && this.rampTransition.toRoadId === selected.road.id &&
-          selected.road.highway !== 'motorway_link';
+          this.rampFirstFix && this.lastRampFix && accuracy <= 30 &&
+          time - this.lastRampFix.time <= this.options.maxGapMs &&
+          selected.match.distanceM <= 30 && selected.turn <= 45 &&
+          selected.road.highway !== 'motorway_link' &&
+          this.rampTransition.candidatePaths?.some(path =>
+            path.toRoadId === selected.road.id && path.linkIds?.at(-1) === this.lastRampFix.road.id);
         if (!transfer && !unresolvedRamp && provenExit && this.visualRoad?.id === selected.road.id) {
           const boundary = this.rampTransition?.classification === 'leaving' ? this.rampTransition.boundary : null;
           const anchor = this.gapAnchor;
@@ -1134,11 +1165,9 @@ export class Tracker {
         const path = road.id === exitRoad.id ? [road] : this.gapPath(road, exitRoad);
         const reference = path ? this.gapReference(path, match.alongM, atM) : null;
         const referenceAssumed = path ? this.pathAssumed(path, match.alongM, atM) : null;
-        const capped = path && speedMps > 1 ? path.reduce((sum, part, i) => sum +
-          cappedForecastTime(part, i ? 0 : match.alongM,
-            i === path.length - 1 ? atM : part.lengthM || roadLengthM(part), speedMps), 0) : null;
-        const projectedDeltaSeconds = deltaSeconds != null && capped != null && reference != null ?
-          deltaSeconds + capped - reference : null;
+        const forecastSeconds = path && Number.isFinite(speedMps) && speedMps > 1 ? distance / speedMps : null;
+        const projectedDeltaSeconds = deltaSeconds != null && forecastSeconds != null && reference != null ?
+          deltaSeconds + forecastSeconds - reference : null;
         return { name: e.name || e.label || 'Unnamed exit', number: e.number ?? null,
           distanceM: distance, projectedDeltaSeconds, forecast: true, referenceAssumed };
       });

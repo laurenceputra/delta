@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { Tracker, sampleAt, roadLengthM } from './engine.js';
 
 const road = {
@@ -58,6 +59,99 @@ test('same expressway transfer outcome keeps distinct physical boundaries unreso
   assert.equal(transition.pathCount, 1);
   assert.equal(transition.exactPathCount, 2);
   assert.equal(transition.boundary, null);
+});
+
+test('real PIE exit keeps its shared role and boundary across two downstream branches', () => {
+  const roads = JSON.parse(readFileSync(new URL('./data/roads.json', import.meta.url)));
+  const local = JSON.parse(readFileSync(new URL('./data/local-roads.json', import.meta.url)));
+  const tracker = new Tracker({ ...roads, localRoads: local.roads });
+  const pie = roads.roads.find(road => road.id === 'osm-way-738989173');
+  const firstLink = local.roads.find(road => road.id === 'osm-way-655169346');
+  const transition = tracker.classifyRamp(firstLink, pie);
+  assert.equal(transition.classification, 'leaving');
+  assert.equal(transition.originRef, 'PIE');
+  assert.equal(transition.fromRoadId, pie.id);
+  assert.equal(transition.toRoadId, null);
+  assert.equal(transition.destinationRef, null);
+  assert.equal(transition.pathCount, 1);
+  assert.equal(transition.exactPathCount, 2);
+  assert.deepEqual(transition.linkIds, [
+    'osm-way-655169346', 'osm-way-123220700', 'osm-way-794544011',
+  ]);
+  assert.deepEqual(transition.boundary.coordinate, [103.8128905, 1.3340786]);
+  assert.deepEqual(transition.candidatePaths.map(path => path.toRoadId).sort(), [
+    'osm-way-1057560070', 'osm-way-1351656257',
+  ]);
+});
+
+test('a joining fork keeps its destination and entry boundary unresolved', () => {
+  const street = { id: 'street', highway: 'residential',
+    coordinates: [[103.899, 1.349], [103.9, 1.349]] };
+  const ramp = { id: 'join', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9, 1.349], [103.905, 1.354]] };
+  const cte = { ...road, id: 'cte', ref: 'CTE', coordinates: [[103.905, 1.354], [103.915, 1.354]] };
+  const pie = { ...road, id: 'pie', ref: 'PIE', coordinates: [[103.905, 1.354], [103.915, 1.354]] };
+  const tracker = new Tracker({ roads: [cte, pie], localRoads: [street, ramp],
+    rampGraph: { links: [{ id: 'join' }], paths: [
+      { kind: 'joining', fromRoadId: 'street', toRoadId: 'cte',
+        linkIds: ['join'], endCoordinate: ramp.coordinates[1] },
+      { kind: 'joining', fromRoadId: 'street', toRoadId: 'pie',
+        linkIds: ['join'], endCoordinate: ramp.coordinates[1] },
+    ] } });
+  const transition = tracker.classifyRamp(ramp, street);
+  assert.equal(transition.classification, 'joining');
+  assert.equal(transition.toRoadId, null);
+  assert.equal(transition.destinationRef, null);
+  assert.equal(transition.boundary, null);
+  tracker.update(at(street, 40, 0));
+  tracker.update(at(street, 50, 1000));
+  tracker.update(at(ramp, 30, 2000));
+  const approach = tracker.update(at(ramp, 70, 4000));
+  assert.equal(tracker.rampTransition?.classification, 'joining');
+  assert.equal(approach.approachTime, epoch + 2000);
+  assert.equal(approach.mainlineEntryTime, null);
+  assert.equal(approach.deltaSeconds, null);
+  assert.equal(tracker.joinEvidence, null);
+});
+
+test('branch observation resolves a leaving destination without reviving discarded paths', () => {
+  const main = { ...road, id: 'main', ref: 'PIE' };
+  const common = { id: 'common', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9027, 1.35], [103.9037, 1.3495]] };
+  const north = { id: 'north', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9037, 1.3495], [103.9047, 1.3495]] };
+  const south = { id: 'south', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9037, 1.3495], [103.9037, 1.3485]] };
+  const northRoad = { id: 'north-road', highway: 'trunk',
+    coordinates: [[103.9047, 1.3495], [103.9057, 1.3495]] };
+  const southRoad = { id: 'south-road', highway: 'trunk',
+    coordinates: [[103.9037, 1.3485], [103.9037, 1.3475]] };
+  const tracker = new Tracker({ roads: [main], localRoads: [common, north, south, northRoad, southRoad],
+    rampGraph: { links: [{ id: 'common' }, { id: 'north' }, { id: 'south' }], paths: [
+      { kind: 'leaving', fromRoadId: 'main', toRoadId: 'north-road',
+        linkIds: ['common', 'north'], startCoordinate: common.coordinates[0] },
+      { kind: 'leaving', fromRoadId: 'main', toRoadId: 'south-road',
+        linkIds: ['common', 'south'], startCoordinate: common.coordinates[0] },
+    ] } });
+  start(tracker, main, 150);
+  tracker.update(at(main, 200, 2000));
+  const firstRamp = tracker.update(at(common, 30, 3000));
+  assert.equal(firstRamp.rampTransition.classification, 'leaving');
+  assert.equal(firstRamp.rampTransition.toRoadId, null);
+  const weakBranch = tracker.update({ ...at(north, 60, 4000), accuracy: 45 });
+  assert.equal(weakBranch.rampTransition.toRoadId, null);
+  assert.equal(weakBranch.rampTransition.exactPathCount, 2);
+  const branch = tracker.update(at(north, 60, 5000));
+  assert.equal(branch.rampTransition.classification, 'leaving');
+  assert.equal(branch.rampTransition.toRoadId, 'north-road');
+  assert.equal(branch.rampTransition.exactPathCount, 1);
+  const weakIncompatible = tracker.update({ ...at(south, 60, 6000), accuracy: 45 });
+  assert.equal(weakIncompatible.rampTransition.classification, 'leaving');
+  assert.equal(weakIncompatible.rampTransition.toRoadId, 'north-road');
+  const incompatible = tracker.update(at(south, 60, 7000));
+  assert.equal(incompatible.rampTransition.classification, 'unknown');
+  assert.equal(incompatible.rampTransition.boundary, null);
+  assert.equal(incompatible.rampTransition.exactPathCount, 1);
 });
 
 test('matches direction using heading and reports three upcoming exits', () => {
@@ -331,13 +425,17 @@ test('verified cross-reference connector continues timing without switch hold', 
   assert.ok(after.elapsedSeconds > 1);
 });
 
-test('forecast caps each interval at future mapped speed limit', () => {
+test('current-speed forecast keeps the piecewise reference through a lower-limit zone', () => {
   const zoned = { ...road, speedLimit: 90,
     speedLimits: [{ fromM: 200, toM: 1100, limitKmh: 50 }] };
   const tracker = new Tracker({ roads: [zoned] });
   const state = start(tracker, zoned, 100);
   const exit = state.exits[0];
-  assert.ok(exit.projectedDeltaSeconds >= state.deltaSeconds - 0.01);
+  const reference = (200 - state.alongM) / (90 / 3.6) +
+    (state.alongM + exit.distanceM - 200) / (50 / 3.6);
+  assert.ok(Math.abs(exit.projectedDeltaSeconds -
+    (state.deltaSeconds + exit.distanceM / (state.speedKmh / 3.6) - reference)) < 0.01);
+  assert.ok(exit.projectedDeltaSeconds < state.deltaSeconds);
 });
 
 test('uncertainty detects a short lower-limit zone inside GPS radius', () => {

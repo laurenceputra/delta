@@ -59,6 +59,41 @@ test('shared ECP to KPE ramp identifies transfer but withholds ambiguous physica
   assert.equal(transition.boundary, null);
 });
 
+test('real PIE exit keeps leaving role while two destinations share the same ramp prefix', () => {
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  const at = (id, fraction, ms) => {
+    const road = byId.get(id) || local.roads.find(road => road.id === id);
+    return tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+      accuracy: 5, speed: 15, timestamp: base + ms });
+  };
+  at('osm-way-738989173', .2, 0);
+  const live = at('osm-way-738989173', .8, 1000);
+  const first = at('osm-way-655169346', .2, 2000);
+  assert.equal(first.rampTransition.classification, 'leaving');
+  assert.equal(first.rampTransition.confidence, 'provisional');
+  assert.equal(first.rampTransition.originRef, 'PIE');
+  assert.equal(first.rampTransition.destinationRef, null);
+  assert.equal(first.rampTransition.toRoadId, null);
+  assert.equal(first.rampTransition.exactPathCount, 2);
+  assert.deepEqual(first.rampTransition.linkIds, [
+    'osm-way-655169346', 'osm-way-123220700', 'osm-way-794544011',
+  ]);
+  const switched = at('osm-way-655169346', .7, 4000);
+  assert.equal(switched.rampTransition.classification, 'leaving');
+  assert.equal(switched.rampTransition.confidence, 'confirmed');
+  assert.equal(switched.rampTransition.destinationRef, null);
+  assert.equal(switched.visualRoad.id, 'osm-way-655169346');
+  assert.equal(switched.previousDelta.value, live.deltaSeconds);
+  at('osm-way-123220700', .5, 6000);
+  const shared = at('osm-way-794544011', .5, 8000);
+  assert.equal(shared.rampTransition.toRoadId, null);
+  const branch = at('osm-way-655169345', .5, 10000);
+  assert.equal(branch.rampTransition.classification, 'leaving');
+  assert.equal(branch.rampTransition.toRoadId, 'osm-way-1057560070');
+  assert.equal(branch.rampTransition.exactPathCount, 1);
+});
+
 test('confirmed TPE mainline remains visual road beside a six-metre parallel exit ramp', () => {
   const mainline = byId.get('osm-way-756847962');
   const tracker = new Tracker(layered);
@@ -445,7 +480,7 @@ test('bundled MCE to KPE GPS gap reconstructs only its directed connection', () 
   assert.ok(Number.isFinite(after.deltaSeconds));
 });
 
-test('exit forecast never assumes travel faster than each future limit', () => {
+test('exit forecast projects current speed against piecewise future speed-limit reference', () => {
   const road = { id: 'forecast-caps', ref: 'KPE', name: 'KPE',
     coordinates: [[103.9, 1.35], [103.9027, 1.35]], speedLimit: 90,
     exits: [{ id: 'exit-a', name: 'Exit A', offsetM: 250 }],
@@ -458,9 +493,38 @@ test('exit forecast never assumes travel faster than each future limit', () => {
   const state = tracker.update(fix(20, 1000));
   assert.equal(state.exits.length, 1);
   assert.ok(Number.isFinite(state.exits[0].projectedDeltaSeconds));
-  assert.ok(state.exits[0].projectedDeltaSeconds >= state.deltaSeconds - .05,
-    `forecast ${state.exits[0].projectedDeltaSeconds}s undercuts current ${state.deltaSeconds}s`);
+  const expectedReference = 80 / (90 / 3.6) + 150 / (70 / 3.6);
+  const expectedProjection = state.deltaSeconds + 230 / (120 / 3.6) - expectedReference;
+  assert.ok(Math.abs(state.exits[0].projectedDeltaSeconds - expectedProjection) < .05,
+    `forecast ${state.exits[0].projectedDeltaSeconds}s, expected ${expectedProjection}s`);
+  const stopped = tracker.update({ ...sampleAt(road, 20), accuracy: 5, speed: 0,
+    timestamp: base + 2000 });
+  assert.equal(stopped.exits[0].projectedDeltaSeconds, null);
+  const stale = tracker.invalidate('GPS signal lost');
+  assert.deepEqual(stale.exits, []);
 });
+
+test('optional private PIE replay reproduces the three current-speed exit projections',
+  { skip: !process.env.DELTA_PRIVATE_TRACE }, async () => {
+    const { parseExport } = await import('./scripts/replay-diagnostics.mjs');
+    const trace = parseExport(readFileSync(process.env.DELTA_PRIVATE_TRACE));
+    const tracker = new Tracker(layered);
+    let target = null;
+    for (const event of trace.events) {
+      if (event.type === 'fix') {
+        const state = tracker.update(event.fix);
+        if (event.recordedAt?.startsWith('2026-11-09T06:19:24.')) target = state;
+      } else if (event.type === 'error') tracker.invalidate(event.reason || 'GPS unavailable');
+    }
+    assert.ok(target);
+    assert.equal(target.road.ref, 'PIE');
+    assert.equal(target.exits.length, 3);
+    for (const [exit, distance, projection] of target.exits.map((exit, index) =>
+      [exit, [222, 1533, 3144][index], [-3.059, -3.968, -5.085][index]])) {
+      assert.ok(Math.abs(exit.distanceM - distance) < 1);
+      assert.ok(Math.abs(exit.projectedDeltaSeconds - projection) < .005);
+    }
+  });
 
 test('historical assumed reference remains flagged after returning to a known limit', () => {
   const road = { id: 'assumed-history', ref: 'MCE', name: 'MCE',
