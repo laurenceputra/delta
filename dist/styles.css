@@ -24,11 +24,8 @@ body:has(.info-drawer:not([hidden])){overflow:hidden}.info-drawer{max-height:var
 .exit-list .exit-delta.ahead{color:#ffbd80}:root[data-theme="light"] .exit-list .exit-delta.ahead{color:#ad4f16}
 /* Driving layout keeps the instruments and three exits in one glance. */
 .safety-gate{position:fixed;inset:0;z-index:20;background:#0b120ef2;display:grid;place-items:center;padding:24px}.safety-card{width:min(100%,470px);padding:clamp(25px,5vw,45px);background:#202b22;border:1px solid #718b52;border-radius:8px;box-shadow:0 30px 80px #0009}.safety-card h2{font:800 68px/.95 'Barlow Condensed',Impact,sans-serif;text-transform:uppercase;margin:24px 0}.safety-card p{color:#d2dfd2;line-height:1.6;margin-bottom:32px}.safety-card .primary-button{justify-content:center}:root[data-theme="light"] .safety-gate{background:#dce7d8f5}:root[data-theme="light"] .safety-card{background:#f8fbf6;color:#17231a;box-shadow:0 20px 60px #53745344}:root[data-theme="light"] .safety-card p{color:#425b46}.exit-arrow,.delta-icon{display:none}.info-drawer .theme-control{display:flex;flex-direction:column;align-items:flex-start;font-size:12px;margin:24px 0}.info-drawer .theme-control select{width:100%;max-width:none}.info-drawer .wake-button{margin:0 0 12px}.info-drawer .control-row{grid-template-columns:1fr 1fr}.info-drawer .slider-label{grid-column:1/-1}.info-drawer .secondary-button{margin:10px 0}.road-heading.local-road strong{font-size:clamp(26px,3.5vw,45px);line-height:1.05}.drive-panel{padding-bottom:0}.drive-panel .demo-controls{display:none}body:has(.drive-panel:not([hidden])) .app-shell{height:100dvh;min-height:0;padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right));padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}body:has(.drive-panel:not([hidden])) main{min-height:0;flex:1;display:flex;flex-direction:column}body:has(.drive-panel:not([hidden])) .drive-panel{min-height:0;flex:1;display:flex;flex-direction:column}body:has(.drive-panel:not([hidden])) .lower-grid{flex:1;min-height:0}body:has(.drive-panel:not([hidden])) .exits-card,body:has(.drive-panel:not([hidden])) .drive-details{min-height:0}body:has(.drive-panel:not([hidden])) footer{padding:10px 0}body:has(.drive-panel:not([hidden])) .app-shell{overflow:hidden}.exit-list li{min-height:45px}
-@media(max-width:600px){body:has(.drive-panel:not([hidden])) .topbar{height:47px;flex:none}body:has(.drive-panel:not([hidden])) .session-strip{height:29px;flex:none}body:has(.drive-panel:not([hidden])) .drive-panel{padding-top:4px}body:has(.drive-panel:not([hidden])) .drive-topline{margin-bottom:4px}body:has(.drive-panel:not([hidden])) .road-heading strong{font-size:35px}body:has(.drive-panel:not([hidden])) .road-heading.local-road strong{font-size:24px}body:has(.drive-panel:not([hidden])) .lower-grid{flex:1.15}body:has(.drive-panel:not([hidden])) .exits-card,body:has(.drive-panel:not([hidden])) .drive-details{padding:9px 12px}body:has(.drive-panel:not([hidden])) .exit-list li{min-height:35px}body:has(.drive-panel:not([hidden])) .drive-details{display:none}body:has(.drive-panel:not([hidden])) footer{display:none}}
-@media(max-height:500px) and (orientation:landscape){body:has(.drive-panel:not([hidden])) .topbar{height:40px}body:has(.drive-panel:not([hidden])) .session-strip{height:25px}body:has(.drive-panel:not([hidden])) .drive-topline{margin-bottom:2px}body:has(.drive-panel:not([hidden])) .lower-grid{flex:.8}body:has(.drive-panel:not([hidden])) .exits-card,body:has(.drive-panel:not([hidden])) .drive-details{padding:5px 12px}body:has(.drive-panel:not([hidden])) .exit-list li{min-height:25px}body:has(.drive-panel:not([hidden])) footer{display:none}}
-@media(max-height:500px) and (orientation:landscape){body:has(.drive-panel:not([hidden])) .drive-topline{min-height:0}body:has(.drive-panel:not([hidden])) .road-heading strong{font-size:28px}body:has(.drive-panel:not([hidden])) .lower-grid{flex:1.32}body:has(.drive-panel:not([hidden])) .exit-list li{min-height:22px}body:has(.drive-panel:not([hidden])) .section-heading h2{font-size:18px}}
 /* Browser chrome can reduce the visual viewport after layout; leave a deliberate gutter. */
-body:has(.drive-panel:not([hidden])) .app-shell{height:var(--visible-height,100dvh);padding-bottom:calc(16px + env(safe-area-inset-bottom))}body:has(.drive-panel:not([hidden])) .lower-grid{flex:0 1 auto;min-height:0}body:has(.drive-panel:not([hidden])) .exits-card{min-height:0}.info-drawer{height:var(--visible-height,100dvh);padding-bottom:calc(40px + env(safe-area-inset-bottom))}.drawer-head{position:sticky;top:-32px;z-index:2;background:inherit;padding:12px 0}.settings-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:0 0 26px}.info-drawer .settings-actions .wake-button,.info-drawer .settings-actions .secondary-button{width:100%;max-width:none;min-height:44px;margin:0;padding:10px 14px;display:flex;justify-content:center;align-items:center;text-align:center;line-height:1.25}@media(max-width:350px){.settings-actions{grid-template-columns:1fr}}@media(max-width:600px){body:has(.drive-panel:not([hidden])) .lower-grid{flex:0 0 auto}body:has(.drive-panel:not([hidden])) .exits-card{padding-bottom:14px}}
+.info-drawer{height:var(--visible-height,100dvh);padding-bottom:calc(40px + env(safe-area-inset-bottom))}.drawer-head{position:sticky;top:-32px;z-index:2;background:inherit;padding:12px 0}.settings-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:0 0 26px}.info-drawer .settings-actions .wake-button,.info-drawer .settings-actions .secondary-button{width:100%;max-width:none;min-height:44px;margin:0;padding:10px 14px;display:flex;justify-content:center;align-items:center;text-align:center;line-height:1.25}@media(max-width:350px){.settings-actions{grid-template-columns:1fr}}@media(max-width:600px){body:has(.drive-panel:not([hidden])) .lower-grid{flex:0 0 auto}body:has(.drive-panel:not([hidden])) .exits-card{padding-bottom:14px}}
 /* One header alignment contract across dashboard and setup views. */
 .topbar,body:has(.drive-panel:not([hidden])) .topbar{display:flex;flex-wrap:nowrap;align-items:center;justify-content:space-between;gap:12px;box-sizing:border-box}
 .brand{line-height:1;white-space:nowrap}.top-actions{display:flex;align-items:center;flex:none}
@@ -39,12 +36,6 @@ body:has(.drive-panel:not([hidden])) .app-shell{height:var(--visible-height,100d
 .driving-reminder{flex:none;margin:4px 0 0;color:#a8b9aa;font-size:10px;font-weight:700;line-height:1.2;white-space:nowrap;text-align:center}:root[data-theme="light"] .driving-reminder{color:#49634c}
 .safety-gate{max-height:var(--visible-height,100dvh);overflow-y:auto;align-items:center}.safety-card{max-height:calc(var(--visible-height,100dvh) - 32px);overflow-y:auto;overscroll-behavior:contain}.safety-card p{font-size:clamp(12px,2.6vw,15px);line-height:1.45;margin-bottom:20px}.safety-card h2{font-size:clamp(42px,11vw,68px);margin:14px 0}.safety-card .primary-button{min-height:44px}
 @media(max-width:600px){.driving-reminder{font-size:9px;margin-top:3px}.safety-gate{padding:12px}.safety-card{padding:20px;max-height:calc(var(--visible-height,100dvh) - 24px)}}
-/* Instrument height follows content{flex:0 0 auto;align-items:stretch}body:has(.drive-panel:not([hidden])) .lower-grid{flex:0 0 auto}
-@media(max-width:600px){}
-@media(max-height:500px) and (orientation:landscape){}
-@media(max-width:600px){}
-@media(max-height:500px) and (orientation:landscape){}
-@media(max-height:500px) and (orientation:landscape){}@media(max-width:600px){}
 .version-line{display:flex;align-items:baseline;gap:7px;margin:0 0 16px!important;font-size:11px!important;font-weight:700;color:#9fb4a2!important}.version-line strong{font-size:13px;color:#e8f3e7}.version-line span{font-weight:500;color:#83998a}:root[data-theme="light"] .version-line,:root[data-theme="light"] .version-line strong{color:#344c38!important}:root[data-theme="light"] .version-line span{color:#6c836f}
 .update-notice{padding:14px 16px;margin:0 0 20px;border:1px solid #8ba947;border-radius:4px;background:#273b28}.update-notice strong{font-size:12px;color:#d5fa5a;letter-spacing:.05em}.update-notice p{margin:7px 0 8px!important}.update-notice .secondary-button{margin:0!important}.top-actions #settingsButton{position:relative}.top-actions #settingsButton.has-update::after{content:'';position:absolute;right:1px;top:1px;width:9px;height:9px;border-radius:50%;background:#d5fa5a;border:2px solid #101411}:root[data-theme="light"] .update-notice{background:#edf5e5;border-color:#799b43}:root[data-theme="light"] .update-notice strong{color:#3c621a}:root[data-theme="light"] .top-actions #settingsButton.has-update::after{background:#5c881a;border-color:#f8fbf6}
 /* Instrument layout: content sets card height; every label stays inside its card. */
@@ -87,26 +78,126 @@ body:has(.drive-panel:not([hidden])) .instrument-grid{flex:0 0 auto}
 @media(max-width:380px){body:has(.drive-panel:not([hidden])) .drive-topline .eyebrow,body:has(.drive-panel:not([hidden])) .section-heading .eyebrow{display:none}body:has(.drive-panel:not([hidden])) .lower-grid{margin-top:4px}}
 @media(max-height:500px) and (orientation:landscape){body:has(.drive-panel:not([hidden])) .drive-panel{padding-top:0}body:has(.drive-panel:not([hidden])) .drive-topline .eyebrow,body:has(.drive-panel:not([hidden])) .section-heading .eyebrow{display:none}body:has(.drive-panel:not([hidden])) .driving-reminder{margin-top:1px;line-height:1}body:has(.drive-panel:not([hidden])) .lower-grid{margin-top:3px}}
 .delta-readout.held,:root[data-theme="light"] .delta-readout.held{color:#8c9e90}.delta-readout.held{filter:saturate(.2)}:root[data-theme="light"] .delta-readout.held{color:#687c6c}.completed-summary{border:1px solid #566c57;border-radius:4px;padding:0 14px;margin:20px 0}.completed-summary h3{margin:14px 0 5px}.completed-summary p{margin:0 0 14px}.exit-list .exit-distance{white-space:nowrap}
-/* Stable driving geometry: route state changes text, never card placement. */
-body:has(.drive-panel:not([hidden])) .drive-topline{height:70px;min-height:70px;max-height:70px;overflow:hidden}
+/* Adaptive driving geometry. The two instruments keep the same footprint across route states. */
+body:has(.drive-panel:not([hidden])) .app-shell{
+  height:var(--visible-height,100dvh);
+  min-height:0;
+  overflow:hidden;
+  padding-bottom:calc(16px + env(safe-area-inset-bottom));
+}
+body:has(.drive-panel:not([hidden])) .drive-panel{
+  display:flex;
+  flex-direction:column;
+  flex:1;
+  min-height:0;
+  padding-top:4px;
+  padding-bottom:0;
+}
+body:has(.drive-panel:not([hidden])) .drive-topline{
+  flex:none;
+  height:clamp(44px,7vh,70px);
+  min-height:0;
+  max-height:none;
+  margin-bottom:4px;
+  overflow:hidden;
+}
 body:has(.drive-panel:not([hidden])) .drive-topline>div{min-width:0;width:100%}
 body:has(.drive-panel:not([hidden])) .road-heading{display:flex;min-width:0;max-width:100%;align-items:baseline}
-body:has(.drive-panel:not([hidden])) .road-heading strong,body:has(.drive-panel:not([hidden])) .road-heading span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-body:has(.drive-panel:not([hidden])) .road-heading strong{flex:none;max-width:60%}
+body:has(.drive-panel:not([hidden])) .road-heading strong,
+body:has(.drive-panel:not([hidden])) .road-heading span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+body:has(.drive-panel:not([hidden])) .road-heading strong{flex:none;max-width:72%}
 body:has(.drive-panel:not([hidden])) .road-heading span{flex:1}
-body:has(.drive-panel:not([hidden])) .instrument-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);align-items:stretch;flex:none}
-body:has(.drive-panel:not([hidden])) .speed-card,body:has(.drive-panel:not([hidden])) .delta-card{box-sizing:border-box;height:210px;min-height:210px;max-height:210px;overflow:visible}
+body:has(.drive-panel:not([hidden])) .instrument-grid{
+  display:grid;
+  grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);
+  align-items:stretch;
+  flex:none;
+  gap:8px;
+}
+body:has(.drive-panel:not([hidden])) .speed-card,
+body:has(.drive-panel:not([hidden])) .delta-card{
+  box-sizing:border-box;
+  height:clamp(195px,calc((var(--visible-height,100dvh) - 280px)*.48),330px);
+  min-height:0;
+  max-height:none;
+  overflow:visible;
+}
 body:has(.drive-panel:not([hidden])) .speed-card{grid-template-rows:auto minmax(0,1fr) 5px auto auto}
 body:has(.drive-panel:not([hidden])) .speed-warning{visibility:hidden;min-height:12px;line-height:1.2}
 body:has(.drive-panel:not([hidden])) .speed-warning.is-visible{visibility:visible}
 body:has(.drive-panel:not([hidden])) .delta-card{justify-content:flex-start}
+body:has(.drive-panel:not([hidden])) .speed-readout{align-self:center}
 body:has(.drive-panel:not([hidden])) .delta-readout{margin:auto 0 2px}
+body:has(.drive-panel:not([hidden])) .delta-unit{margin-bottom:auto}
 body:has(.drive-panel:not([hidden])) .delta-card p{margin:8px 0 0}
-body:has(.drive-panel:not([hidden])) .exit-list{min-height:135px}
-body:has(.drive-panel:not([hidden])) .exit-list li{min-height:45px;max-height:45px;overflow:hidden}
-body:has(.drive-panel:not([hidden])) .exit-list .exit-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;line-height:1.2}
-@media(max-width:600px){body:has(.drive-panel:not([hidden])) .drive-topline{height:60px;min-height:60px;max-height:60px}body:has(.drive-panel:not([hidden])) .road-heading strong{max-width:72%}body:has(.drive-panel:not([hidden])) .road-heading span{max-width:28%}body:has(.drive-panel:not([hidden])) .speed-card,body:has(.drive-panel:not([hidden])) .delta-card{height:178px;min-height:178px;max-height:178px}body:has(.drive-panel:not([hidden])) .speed-card{row-gap:4px}body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(55px,15vw,88px)}body:has(.drive-panel:not([hidden])) .delta-readout{font-size:clamp(50px,13vw,78px)}body:has(.drive-panel:not([hidden])) .exit-list{min-height:105px}body:has(.drive-panel:not([hidden])) .exit-list li{min-height:35px;max-height:35px}}
-@media(max-height:500px) and (orientation:landscape){body:has(.drive-panel:not([hidden])) .drive-topline{height:34px;min-height:34px;max-height:34px}body:has(.drive-panel:not([hidden])) .speed-card,body:has(.drive-panel:not([hidden])) .delta-card{height:126px;min-height:126px;max-height:126px}body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:52px}body:has(.drive-panel:not([hidden])) .delta-readout{font-size:52px}body:has(.drive-panel:not([hidden])) .exit-list{min-height:66px}body:has(.drive-panel:not([hidden])) .exit-list li{min-height:22px;max-height:22px}}
-/* A ramp label occupies the same reserved header line as any road name. */
+body:has(.drive-panel:not([hidden])) .lower-grid{
+  display:grid;
+  grid-template-columns:1fr;
+  flex:1;
+  min-height:0;
+  margin-top:8px;
+}
+body:has(.drive-panel:not([hidden])) .exits-card{
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  padding:clamp(10px,2vh,22px) clamp(12px,3vw,26px);
+}
+body:has(.drive-panel:not([hidden])) .exit-list{
+  display:grid;
+  grid-template-rows:repeat(3,minmax(0,1fr));
+  flex:1;
+  min-height:0;
+}
+body:has(.drive-panel:not([hidden])) .exit-list li{
+  min-height:0;
+  max-height:none;
+  overflow:hidden;
+  padding:2px 0;
+}
+body:has(.drive-panel:not([hidden])) .exit-list .exit-name{
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:2;
+  overflow:hidden;
+  line-height:1.2;
+  font-size:clamp(12px,calc(var(--visible-height,100dvh)*.019),18px);
+}
+body:has(.drive-panel:not([hidden])) .exit-list .exit-distance{font-size:clamp(11px,calc(var(--visible-height,100dvh)*.014),14px)}
+body:has(.drive-panel:not([hidden])) .exit-list .exit-delta{font-size:clamp(14px,calc(var(--visible-height,100dvh)*.019),20px)}
 body:has(.drive-panel:not([hidden])) .road-heading.transition-heading strong{max-width:100%;font-size:clamp(20px,4vw,32px)}
 body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{display:none}
+@media(max-width:600px){
+  body:has(.drive-panel:not([hidden])) .topbar{height:56px;min-height:56px;flex:none}
+  body:has(.drive-panel:not([hidden])) .session-strip{height:29px;flex:none}
+  body:has(.drive-panel:not([hidden])) .drive-topline{height:clamp(48px,9vh,64px)}
+  body:has(.drive-panel:not([hidden])) .speed-card,
+  body:has(.drive-panel:not([hidden])) .delta-card{padding:clamp(8px,1.5vh,15px)}
+  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(54px,16vw,100px)}
+  body:has(.drive-panel:not([hidden])) .delta-readout{font-size:clamp(46px,13vw,82px)}
+  body:has(.drive-panel:not([hidden])) .drive-details,body:has(.drive-panel:not([hidden])) footer{display:none}
+}
+@media(max-width:380px){
+  body:has(.drive-panel:not([hidden])) .drive-topline .eyebrow,
+  body:has(.drive-panel:not([hidden])) .section-heading .eyebrow{display:none}
+}
+@media(min-width:381px) and (max-width:600px) and (min-height:750px){
+  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(78px,22vw,100px)}
+}
+@media(max-height:500px) and (orientation:landscape){
+  body:has(.drive-panel:not([hidden])) .topbar{height:48px;min-height:48px}
+  body:has(.drive-panel:not([hidden])) .session-strip{height:25px}
+  body:has(.drive-panel:not([hidden])) .drive-topline{height:34px}
+  body:has(.drive-panel:not([hidden])) .speed-card,
+  body:has(.drive-panel:not([hidden])) .delta-card{height:clamp(112px,31vh,130px);padding:7px 11px 12px}
+  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:42px}
+  body:has(.drive-panel:not([hidden])) .delta-readout{font-size:52px}
+  body:has(.drive-panel:not([hidden])) .section-heading .eyebrow,
+  body:has(.drive-panel:not([hidden])) .drive-topline .eyebrow{display:none}
+  body:has(.drive-panel:not([hidden])) .section-heading h2{font-size:18px;margin:0}
+  body:has(.drive-panel:not([hidden])) .delta-card p,
+  body:has(.drive-panel:not([hidden])) .delta-foot{display:none}
+  body:has(.drive-panel:not([hidden])) .exit-list .exit-name{font-size:12px}
+  body:has(.drive-panel:not([hidden])) .exit-list .exit-delta{font-size:13px}
+  body:has(.drive-panel:not([hidden])) .drive-details,body:has(.drive-panel:not([hidden])) footer{display:none}
+}
