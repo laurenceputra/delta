@@ -8,7 +8,7 @@ const version = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('package.json version must be semver');
 const template = readFileSync(resolve(root, 'scripts/sw.template.js'), 'utf8');
 const runtimeAssets = ['dist/index.html', 'dist/styles.css', 'dist/app.js', 'dist/engine.js', 'dist/data/roads.json', 'dist/data/local-roads.json.gz', 'dist/data/local-roads.json', 'dist/manifest.webmanifest', 'dist/icons/icon-192.png', 'dist/icons/icon-512.png'];
-runtimeAssets.push('dist/diagnostics.js', 'dist/diagnostics-format.js', 'server/diagnostics.js', 'worker/index.js');
+runtimeAssets.push('dist/readings.js', 'dist/diagnostics.js', 'dist/diagnostics-format.js', 'server/diagnostics.js', 'worker/index.js');
 const roadDataVersion = createHash('sha256').update(readFileSync(resolve(root, 'dist/data/roads.json')))
   .update(readFileSync(resolve(root, 'dist/data/local-roads.json'))).digest('hex');
 const digest = createHash('sha256').update(version).update(template);

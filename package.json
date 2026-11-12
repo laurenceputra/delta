@@ -1,10 +1,10 @@
 {
   "name": "delta-sg",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node dist/engine.test.mjs && node integration.test.mjs && node server/diagnostics.test.mjs && node scripts/replay-diagnostics.test.mjs",
+    "test": "node dist/readings.test.mjs && node dist/engine.test.mjs && node integration.test.mjs && node server/diagnostics.test.mjs && node scripts/replay-diagnostics.test.mjs",
     "dev": "npm run build && wrangler dev --local --ip 127.0.0.1 --port 4173",
     "check": "node scripts/build-version.mjs --check && node --check dist/app.js && node --check dist/engine.js && node --check dist/sw.js && node --check dist/diagnostics.js && node --check server/diagnostics.js && node --check scripts/replay-diagnostics.mjs",
     "build:version": "node scripts/build-version.mjs",

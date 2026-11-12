@@ -62,6 +62,7 @@ function check(g, label) {
   assert.ok(g.exits.bottom <= g.height - 15, `${label}: bottom gutter`);
   assert.ok(g.lastExit <= g.height - 16, `${label}: third exit visible`);
   assert.ok(g.speedInk.bottom <= g.limit.y + 2, `${label}: speed overlaps current limit`);
+  assert.ok(g.speedInk.right <= g.speed.right - 1, `${label}: speed glyph clipped`);
   // Range bounds include line-height below the visible numerals; allow that small ink-free tail.
   assert.ok(g.speedInk.bottom <= g.track.y + 5, `${label}: speed overlaps track`);
   assert.ok(g.deltaInk.right <= g.delta.right - 1, `${label}: delta glyph clipped`);
@@ -94,6 +95,8 @@ test('dashboard cards, exit rows, and Settings fit mobile and landscape viewport
         }
       });
       check(await geometry(page), `${width}x${height} live`);
+      if (process.env.DELTA_LAYOUT_SCREENSHOTS)
+        await page.screenshot({ path: `/tmp/delta-layout-${width}x${height}-live.png` });
       await page.evaluate(() => {
         document.querySelector('#roadRef').textContent = 'Central Expressway towards the North and a very long destination name';
         document.querySelector('#roadDirection').textContent = 'Provisional transfer via a lengthy connector to multiple destinations';
@@ -108,6 +111,14 @@ test('dashboard cards, exit rows, and Settings fit mobile and landscape viewport
           li.querySelector('.exit-name').textContent += ' · Long named exit to Thomson Road and the Central Business District';
       });
       check(await geometry(page), `${width}x${height} stress`);
+      if (process.env.DELTA_LAYOUT_SCREENSHOTS)
+        await page.screenshot({ path: `/tmp/delta-layout-${width}x${height}-stress.png` });
+      await page.evaluate(() => {
+        const delta = document.querySelector('#deltaValue');
+        delta.textContent = '<−60';
+        delta.style.setProperty('--delta-scale', String(Math.min(1, 4 / delta.textContent.length)));
+      });
+      check(await geometry(page), `${width}x${height} ahead cap`);
       await page.locator('#settingsButton').click();
       const settings = await page.evaluate(() => {
         const drawer = document.querySelector('#infoDrawer');
@@ -136,5 +147,94 @@ test('dashboard cards, exit rows, and Settings fit mobile and landscape viewport
         `${width}x${height}: resize geometry`);
     }
     await page.close();
+  } finally { await browser.close(); await new Promise(resolve => http.close(resolve)); }
+});
+
+test('live speed colors override positive pace and stale readings become neutral', { timeout: 45000 }, async () => {
+  const { http, url } = await server();
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args: ['--no-sandbox'] });
+  try {
+    for (const theme of ['dark', 'light']) {
+    const colors = theme === 'dark' ? { good: 'rgb(213, 250, 90)', caution: 'rgb(255, 209, 102)',
+      danger: 'rgb(255, 105, 101)', neutral: 'rgb(155, 173, 159)' } :
+      { good: 'rgb(71, 117, 27)', caution: 'rgb(140, 90, 0)',
+        danger: 'rgb(179, 34, 34)', neutral: 'rgb(104, 124, 108)' };
+    const page = await browser.newPage({ viewport: { width: 320, height: 568 } });
+    await page.addInitScript(() => {
+      navigator.geolocation.watchPosition = (ok, error) => {
+        window.geoOk = ok; window.geoError = error; return 1;
+      };
+      navigator.geolocation.clearWatch = () => {};
+    });
+    await page.goto(url);
+    await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+    await page.waitForFunction(() => document.querySelector('#signalText').textContent.includes('Ready'));
+    await page.locator('#parkedButton').click();
+    await page.waitForFunction(() => window.geoOk);
+    const fix = async (distance, ms, speedKmh) => page.evaluate(async ({ distance, ms, speedKmh }) => {
+      const { sampleAt } = await import('./engine.js');
+      const data = await (await fetch('./data/roads.json')).json();
+      const road = data.roads.find(row => row.id === 'osm-way-32877553');
+      window.colorBase ??= Date.now() - 6000;
+      const point = sampleAt(road, distance);
+      window.geoOk({ coords: { latitude: point.latitude, longitude: point.longitude,
+        accuracy: 5, heading: point.heading, speed: speedKmh / 3.6 },
+      timestamp: window.colorBase + ms });
+    }, { distance, ms, speedKmh });
+    const tones = () => page.evaluate(() => ({
+      speed: [...document.querySelector('#speedValue').classList].filter(x => x.startsWith('reading-')),
+      delta: [...document.querySelector('#deltaValue').classList].filter(x => x.startsWith('reading-')),
+      deltaText: document.querySelector('#deltaValue').textContent,
+      deltaLabel: document.querySelector('#deltaLabel').textContent,
+      warning: getComputedStyle(document.querySelector('#speedWarning')).visibility,
+      speedColor: getComputedStyle(document.querySelector('#speedValue')).color,
+      deltaColor: getComputedStyle(document.querySelector('#deltaValue')).color,
+      warningColor: getComputedStyle(document.querySelector('#speedWarning')).color,
+    }));
+    await fix(20, 0, 79);
+    await fix(30, 4000, 79);
+    let state = await tones();
+    assert.deepEqual(state.speed, ['reading-good']);
+    assert.deepEqual(state.delta, ['reading-good']);
+    assert.equal(state.speedColor, colors.good);
+    assert.equal(state.deltaColor, colors.good);
+    assert.match(state.deltaLabel, /BEHIND REFERENCE/);
+    await fix(40, 5000, 85);
+    state = await tones();
+    assert.deepEqual(state.speed, ['reading-caution']);
+    assert.deepEqual(state.delta, ['reading-caution']);
+    assert.equal(state.speedColor, colors.caution);
+    assert.equal(state.deltaColor, colors.caution);
+    await fix(50, 6000, 100);
+    state = await tones();
+    assert.deepEqual(state.speed, ['reading-danger']);
+    assert.deepEqual(state.delta, ['reading-danger']);
+    assert.equal(state.warning, 'visible');
+    assert.equal(state.speedColor, colors.danger);
+    assert.equal(state.deltaColor, colors.danger);
+    assert.equal(state.warningColor, colors.danger);
+    await page.evaluate(() => window.geoError({ code: 2, message: 'GPS unavailable' }));
+    state = await tones();
+    assert.deepEqual(state.speed, ['reading-neutral']);
+    assert.deepEqual(state.delta, ['reading-neutral']);
+    assert.equal(state.speedColor, colors.neutral);
+    assert.equal(state.deltaColor, colors.neutral);
+    await page.evaluate(async () => {
+      const { sampleAt } = await import('./engine.js');
+      const data = await (await fetch('./data/roads.json')).json();
+      const road = data.roads.find(row => row.id === 'osm-way-32877553');
+      for (let second = 7; second <= 82; second++) {
+        const point = sampleAt(road, second === 7 ? 60 : 70);
+        window.geoOk({ coords: { latitude: point.latitude, longitude: point.longitude,
+          accuracy: 5, heading: point.heading, speed: 79 / 3.6 },
+        timestamp: window.colorBase + second * 1000 });
+      }
+    });
+    state = await tones();
+    assert.equal(state.deltaText, '>60');
+    assert.deepEqual(state.delta, ['reading-good']);
+    assert.equal(state.deltaColor, colors.good);
+    await page.close();
+    }
   } finally { await browser.close(); await new Promise(resolve => http.close(resolve)); }
 });

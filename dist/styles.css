@@ -9,6 +9,7 @@ footer a{color:inherit;text-decoration:underline;text-underline-offset:2px}foote
  .lower-grid{grid-template-columns:1fr;margin:0}.drive-details{display:none}
  .section-heading .eyebrow{font-size:8px}.exits-card{padding:12px}.section-heading h2{font-size:22px}.exit-list li{gap:10px;min-height:40px}.exit-list .exit-name{font-size:12px}.exit-list .exit-delta{font-size:13px}.demo-controls{grid-column:1/-1}
 }
+
 .theme-control{display:flex;align-items:center;gap:6px;color:#a8bcaa;font-size:11px;font-weight:700}.theme-control select,.wake-button{border:1px solid #46534a;background:#1d2520;color:#eef2ea;border-radius:4px;padding:8px 10px;font-size:11px}.wake-button[aria-pressed=true]{border-color:#d5fa5a;color:#d5fa5a}.wake-button:disabled{opacity:.5}@media(max-width:600px){.theme-control{font-size:0}.theme-control select{max-width:75px}.wake-button{max-width:85px;padding:6px;font-size:10px}}
 :root[data-theme="light"]{color-scheme:light;color:#17231a;background:#e8efe5}:root[data-theme="light"] body{background:radial-gradient(circle at 70% -15%,#d6e8d2 0,transparent 38%),#e8efe5;color:#17231a}:root[data-theme="light"] .topbar,:root[data-theme="light"] footer{border-color:#b8c9b7}:root[data-theme="light"] .exits-card,:root[data-theme="light"] .drive-details,:root[data-theme="light"] .demo-controls{background:#f8fbf6;border-color:#b9cbb7}:root[data-theme="light"] .info-drawer{background:#f8fbf6}:root[data-theme="light"] .icon-button,:root[data-theme="light"] .theme-control select,:root[data-theme="light"] .wake-button,:root[data-theme="light"] .control-row select,:root[data-theme="light"] .secondary-button{background:#edf4e9;color:#17231a;border-color:#9eae9d}:root[data-theme="light"] .road-heading strong,:root[data-theme="light"] .detail-row strong,:root[data-theme="light"] .exit-list .exit-delta{color:#17231a}:root[data-theme="light"] .setup-copy p,:root[data-theme="light"] .info-drawer p,:root[data-theme="light"] .detail-row,:root[data-theme="light"] .exit-list .exit-distance,:root[data-theme="light"] .road-heading span,:root[data-theme="light"] .session-strip,:root[data-theme="light"] .eyebrow,:root[data-theme="light"] .detail-note{color:#516753}:root[data-theme="light"] .exit-list li,:root[data-theme="light"] .detail-row{border-color:#ccd9c9}:root[data-theme="light"] .setup-copy h1 em{color:#496b13}:root[data-theme="light"] .brand-mark,:root[data-theme="light"] .delta-icon{color:#557719}
 .update-button{background:none;border:1px solid #8aa556;color:#d5fa5a;padding:6px 9px;border-radius:3px;font-size:10px;font-weight:700}:root[data-theme="light"] .update-button{color:#476a18}
@@ -21,7 +22,6 @@ body:has(.info-drawer:not([hidden])){overflow:hidden}.info-drawer{max-height:var
 @media(max-width:600px){.topbar{height:auto;min-height:64px;gap:8px;flex-wrap:wrap;padding:12px 0}.top-actions{gap:6px}.clock{display:none}.brand{font-size:22px;gap:5px}.theme-control select{padding:6px;max-width:72px}.wake-button{max-width:75px}.top-actions .icon-button{width:30px;height:30px}.text-button{max-width:100px}.road-heading.local-road strong{font-size:26px}.exit-list li{gap:10px}.exit-list .exit-delta{font-size:14px}.session-strip{letter-spacing:.06em}}
 :root[data-theme="light"] .mode-badge:not(.demo){color:#476715;border-color:#6b873b}:root[data-theme="light"] .wake-button[aria-pressed=true]{color:#3f6118;border-color:#6b873b}:root[data-theme="light"] .control-row label,:root[data-theme="light"] .demo-heading,:root[data-theme="light"] .theme-control,:root[data-theme="light"] .slider-label output{color:#405743}:root[data-theme="light"] .setup-note,:root[data-theme="light"] footer,:root[data-theme="light"] .exit-list .empty-exits{color:#516753}
 
-.exit-list .exit-delta.ahead{color:#ffbd80}:root[data-theme="light"] .exit-list .exit-delta.ahead{color:#ad4f16}
 /* Driving layout keeps the instruments and three exits in one glance. */
 .safety-gate{position:fixed;inset:0;z-index:20;background:#0b120ef2;display:grid;place-items:center;padding:24px}.safety-card{width:min(100%,470px);padding:clamp(25px,5vw,45px);background:#202b22;border:1px solid #718b52;border-radius:8px;box-shadow:0 30px 80px #0009}.safety-card h2{font:800 68px/.95 'Barlow Condensed',Impact,sans-serif;text-transform:uppercase;margin:24px 0}.safety-card p{color:#d2dfd2;line-height:1.6;margin-bottom:32px}.safety-card .primary-button{justify-content:center}:root[data-theme="light"] .safety-gate{background:#dce7d8f5}:root[data-theme="light"] .safety-card{background:#f8fbf6;color:#17231a;box-shadow:0 20px 60px #53745344}:root[data-theme="light"] .safety-card p{color:#425b46}.exit-arrow,.delta-icon{display:none}.info-drawer .theme-control{display:flex;flex-direction:column;align-items:flex-start;font-size:12px;margin:24px 0}.info-drawer .theme-control select{width:100%;max-width:none}.info-drawer .wake-button{margin:0 0 12px}.info-drawer .control-row{grid-template-columns:1fr 1fr}.info-drawer .slider-label{grid-column:1/-1}.info-drawer .secondary-button{margin:10px 0}.road-heading.local-road strong{font-size:clamp(26px,3.5vw,45px);line-height:1.05}.drive-panel{padding-bottom:0}.drive-panel .demo-controls{display:none}body:has(.drive-panel:not([hidden])) .app-shell{height:100dvh;min-height:0;padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right));padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}body:has(.drive-panel:not([hidden])) main{min-height:0;flex:1;display:flex;flex-direction:column}body:has(.drive-panel:not([hidden])) .drive-panel{min-height:0;flex:1;display:flex;flex-direction:column}body:has(.drive-panel:not([hidden])) .lower-grid{flex:1;min-height:0}body:has(.drive-panel:not([hidden])) .exits-card,body:has(.drive-panel:not([hidden])) .drive-details{min-height:0}body:has(.drive-panel:not([hidden])) footer{padding:10px 0}body:has(.drive-panel:not([hidden])) .app-shell{overflow:hidden}.exit-list li{min-height:45px}
 /* Browser chrome can reduce the visual viewport after layout; leave a deliberate gutter. */
@@ -56,10 +56,8 @@ body:has(.info-drawer:not([hidden])){overflow:hidden}.info-drawer{max-height:var
 .limit-stack strong{font:700 clamp(17px,2.4vw,25px)/1 'Barlow Condensed',Impact,sans-serif;color:#e9f5ea;letter-spacing:.03em;white-space:nowrap}
 .limit-stack #limitContext{font-size:9px;line-height:1.1;letter-spacing:.04em;color:#b9c5b8;overflow-wrap:anywhere}
 .speed-warning{margin:0;color:#ff6965;font-size:10px;font-weight:800;line-height:1.2;letter-spacing:.04em}
-.speed-readout #speedValue.overspeed{color:#ff6965}
 #deltaLabel{font-size:10px;letter-spacing:.05em;color:#e5efe4;text-align:right}
 .delta-readout{font:800 clamp(70px,10vw,150px)/.95 'Barlow Condensed',Impact,sans-serif;letter-spacing:-.035em;color:#eef2ea;margin:14px 0 2px;white-space:nowrap;transform:scaleX(var(--delta-scale,1));transform-origin:left}
-.delta-readout.behind{color:#ffbd80}
 .delta-unit{font:800 12px 'Barlow Condensed',Impact,sans-serif;letter-spacing:.18em}
 .delta-card p{font-size:12px;line-height:1.3;color:#c3d0c3;margin:12px 0 0}
 .delta-foot{font-size:11px;line-height:1.4;color:#829587;margin-top:10px;max-width:300px}
@@ -69,15 +67,14 @@ body:has(.drive-panel:not([hidden])) .instrument-grid{flex:0 0 auto}
 :root[data-theme="light"] .limit-stack strong,:root[data-theme="light"] .delta-readout,:root[data-theme="light"] .delta-unit{color:#17231a}
 :root[data-theme="light"] .limit-stack #limitContext,:root[data-theme="light"] #deltaLabel{color:#557059}
 :root[data-theme="light"] .speed-track{background:#d2ddcf}:root[data-theme="light"] .speed-track span{background:#668c22}
-:root[data-theme="light"] .delta-readout.behind{color:#ad4f16}
-:root[data-theme="light"] .speed-readout #speedValue.overspeed,:root[data-theme="light"] .speed-warning{color:#b32222}
+:root[data-theme="light"] .speed-warning{color:#b32222}
 @media(max-width:850px){.speed-card,.delta-card{padding:15px 18px}.instrument-grid{gap:10px}}
 @media(max-width:600px){.instrument-grid{grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:8px}.speed-card,.delta-card{padding:10px}.speed-card{row-gap:6px}.speed-readout{display:flex;align-items:flex-end;flex-direction:column;gap:1px}.speed-readout #speedValue{align-self:flex-start;font-size:clamp(60px,16vw,100px)}.speed-unit{align-self:flex-start;font-size:10px}.card-top{font-size:9px}.card-foot{font-size:8px;letter-spacing:.03em}.limit-stack strong{font-size:clamp(16px,5vw,21px)}.limit-stack #limitContext{font-size:8px}.delta-readout{font-size:clamp(55px,14vw,90px);margin:10px 0 2px}.delta-card p{font-size:10px}.delta-foot{display:none}.speed-warning{font-size:8px}}
 @media(max-height:500px) and (orientation:landscape){.speed-card,.delta-card{padding:7px 11px 12px}.speed-card{row-gap:3px}.speed-readout{display:flex;flex-direction:row;align-items:baseline}.speed-readout #speedValue{font-size:clamp(50px,14vh,70px)}.speed-unit{font-size:10px}.delta-readout{font-size:clamp(50px,13vh,70px);margin:2px 0}.delta-card p,.delta-foot{display:none}.card-top{font-size:9px}.card-foot{font-size:9px}.limit-stack strong{font-size:17px}.limit-stack #limitContext{font-size:8px}.speed-warning{font-size:8px}}
 /* Tight views prioritize road, speed, and complete exit rows over eyebrow labels. */
 @media(max-width:380px){body:has(.drive-panel:not([hidden])) .drive-topline .eyebrow,body:has(.drive-panel:not([hidden])) .section-heading .eyebrow{display:none}body:has(.drive-panel:not([hidden])) .lower-grid{margin-top:4px}}
 @media(max-height:500px) and (orientation:landscape){body:has(.drive-panel:not([hidden])) .drive-panel{padding-top:0}body:has(.drive-panel:not([hidden])) .drive-topline .eyebrow,body:has(.drive-panel:not([hidden])) .section-heading .eyebrow{display:none}body:has(.drive-panel:not([hidden])) .driving-reminder{margin-top:1px;line-height:1}body:has(.drive-panel:not([hidden])) .lower-grid{margin-top:3px}}
-.delta-readout.held,:root[data-theme="light"] .delta-readout.held{color:#8c9e90}.delta-readout.held{filter:saturate(.2)}:root[data-theme="light"] .delta-readout.held{color:#687c6c}.completed-summary{border:1px solid #566c57;border-radius:4px;padding:0 14px;margin:20px 0}.completed-summary h3{margin:14px 0 5px}.completed-summary p{margin:0 0 14px}.exit-list .exit-distance{white-space:nowrap}
+.completed-summary{border:1px solid #566c57;border-radius:4px;padding:0 14px;margin:20px 0}.completed-summary h3{margin:14px 0 5px}.completed-summary p{margin:0 0 14px}.exit-list .exit-distance{white-space:nowrap}
 /* Adaptive driving geometry. The two instruments keep the same footprint across route states. */
 body:has(.drive-panel:not([hidden])) .app-shell{
   height:var(--visible-height,100dvh);
@@ -161,10 +158,10 @@ body:has(.drive-panel:not([hidden])) .exit-list .exit-name{
   -webkit-line-clamp:2;
   overflow:hidden;
   line-height:1.2;
-  font-size:clamp(12px,calc(var(--visible-height,100dvh)*.019),18px);
+  font-size:clamp(13px,calc(var(--visible-height,100dvh)*.021),20px);
 }
-body:has(.drive-panel:not([hidden])) .exit-list .exit-distance{font-size:clamp(11px,calc(var(--visible-height,100dvh)*.014),14px)}
-body:has(.drive-panel:not([hidden])) .exit-list .exit-delta{font-size:clamp(14px,calc(var(--visible-height,100dvh)*.019),20px)}
+body:has(.drive-panel:not([hidden])) .exit-list .exit-distance{font-size:clamp(12px,calc(var(--visible-height,100dvh)*.015),15px)}
+body:has(.drive-panel:not([hidden])) .exit-list .exit-delta{font-size:clamp(15px,calc(var(--visible-height,100dvh)*.022),22px)}
 body:has(.drive-panel:not([hidden])) .road-heading.transition-heading strong{max-width:100%;font-size:clamp(20px,4vw,32px)}
 body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{display:none}
 @media(max-width:600px){
@@ -173,8 +170,9 @@ body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{displ
   body:has(.drive-panel:not([hidden])) .drive-topline{height:clamp(48px,9vh,64px)}
   body:has(.drive-panel:not([hidden])) .speed-card,
   body:has(.drive-panel:not([hidden])) .delta-card{padding:clamp(8px,1.5vh,15px)}
-  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(54px,16vw,100px)}
-  body:has(.drive-panel:not([hidden])) .delta-readout{font-size:clamp(46px,13vw,82px)}
+  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(62px,22vw,110px)}
+  body:has(.drive-panel:not([hidden])) .delta-readout{font-size:clamp(50px,16vw,100px)}
+  body:has(.drive-panel:not([hidden])) .limit-stack strong{font-size:clamp(18px,5.7vw,28px)}
   body:has(.drive-panel:not([hidden])) .drive-details,body:has(.drive-panel:not([hidden])) footer{display:none}
 }
 @media(max-width:380px){
@@ -182,7 +180,7 @@ body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{displ
   body:has(.drive-panel:not([hidden])) .section-heading .eyebrow{display:none}
 }
 @media(min-width:381px) and (max-width:600px) and (min-height:750px){
-  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(78px,22vw,100px)}
+  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(96px,26vw,110px)}
 }
 @media(max-height:500px) and (orientation:landscape){
   body:has(.drive-panel:not([hidden])) .topbar{height:48px;min-height:48px}
@@ -201,3 +199,13 @@ body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{displ
   body:has(.drive-panel:not([hidden])) .exit-list .exit-delta{font-size:13px}
   body:has(.drive-panel:not([hidden])) .drive-details,body:has(.drive-panel:not([hidden])) footer{display:none}
 }
+
+/* Glanceable reading states for speed, pace and exit forecasts. */
+:is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-good{color:#d5fa5a}
+:is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-caution{color:#ffd166}
+:is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-danger{color:#ff6965}
+:is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-neutral{color:#9bad9f}
+:root[data-theme="light"] :is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-good{color:#47751b}
+:root[data-theme="light"] :is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-caution{color:#8c5a00}
+:root[data-theme="light"] :is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-danger{color:#b32222}
+:root[data-theme="light"] :is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-neutral{color:#687c6c}
