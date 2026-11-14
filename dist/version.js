@@ -1,4 +1,4 @@
 // Generated from package.json. Run npm run build:version after bumping the version.
-export const APP_VERSION = '0.4.4';
-export const BUILD_ID = 'e6ad94255fbb';
-export const ROAD_DATA_VERSION = '7d427642b2193cb91c96bd4af2f02be87e8d7b03af4f9ccbe9a52b8e0d346146';
+export const APP_VERSION = '0.4.5';
+export const BUILD_ID = 'b8a66b16cb5b';
+export const ROAD_DATA_VERSION = '8421ed5b2d150de804bd8b8b8c0eccf7627cd41c4971ebdd97e2b6687b9112cf';

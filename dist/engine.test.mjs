@@ -84,6 +84,46 @@ test('real PIE exit keeps its shared role and boundary across two downstream bra
   ]);
 });
 
+test('bundled Marina MCE ramp reaches one ECP branch but keeps the downstream fork ambiguous', () => {
+  const roads = JSON.parse(readFileSync(new URL('./data/roads.json', import.meta.url)));
+  const local = JSON.parse(readFileSync(new URL('./data/local-roads.json', import.meta.url)));
+  const tracker = new Tracker({ ...roads, localRoads: local.roads });
+  const approach = local.roads.find(road => road.id === 'osm-way-244842555');
+  const shortBranch = roads.roads.find(road => road.id === 'osm-way-635104341');
+  const afterFork = roads.roads.find(road => road.id === 'osm-way-39477474');
+  const wrongDirection = roads.roads.find(road => road.id === 'osm-way-39961203');
+  assert.equal(shortBranch.ref, 'ECP');
+  assert.equal(tracker.recoveryRoute(approach, shortBranch, 20, 100, 10000).routeCount, 1);
+  assert.equal(tracker.recoveryRoute(approach, afterFork, 20, 600, 10000).reasonCode,
+    'ambiguous-route');
+  assert.equal(tracker.recoveryRoute(approach, afterFork, 20, 600, 10000,
+    'osm-way-474450056').routeCount, 1);
+  assert.equal(tracker.recoveryRoute(approach, afterFork, 20, 200, 10000,
+    'osm-way-474450056').reasonCode, 'no-directed-route');
+  assert.equal(tracker.recoveryRoute(approach, wrongDirection, 20, 20, 10000).reasonCode,
+    'no-directed-route');
+  assert.ok(Math.abs(tracker.edgeEntries.get('osm-way-474450056:osm-way-39477474') - 399.8) < 1);
+  const long = roads.rampGraph.paths.find(path => path.kind === 'transfer' &&
+    path.fromRoadId === 'osm-way-654863071' && path.toRoadId === afterFork.id);
+  const route = [long.fromRoadId, ...long.linkIds, long.toRoadId]
+    .map(id => tracker.routeById.get(id));
+  const expected = (route[0].lengthM || roadLengthM(route[0])) +
+    long.lengthM + 600 - tracker.edgeEntries.get('osm-way-474450056:osm-way-39477474');
+  assert.ok(Math.abs(tracker.pathTravel(route, 0, 600) - expected) < 2);
+});
+
+test('rounded road length tolerates a sub-metre endpoint projection overrun', () => {
+  const first = { ...road, id: 'first', coordinates: [[103.9, 1.35], [103.901, 1.35]],
+    nextRoadIds: ['second'] };
+  first.lengthM = roadLengthM(first) - 0.2;
+  const second = { ...road, id: 'second', coordinates: [[103.901, 1.35], [103.902, 1.35]] };
+  const tracker = new Tracker({ roads: [first, second] });
+  const path = [first, second];
+  assert.ok(Math.abs(tracker.pathTravel(path, roadLengthM(first), 20) - 20) < 0.01);
+  assert.ok(Number.isFinite(tracker.gapReference(path, roadLengthM(first), 20)));
+  assert.equal(tracker.gapReference(path, roadLengthM(first) + 3, 20), null);
+});
+
 test('a joining fork keeps its destination and entry boundary unresolved', () => {
   const street = { id: 'street', highway: 'residential',
     coordinates: [[103.899, 1.349], [103.9, 1.349]] };
@@ -379,7 +419,7 @@ test('long tunnel gap reconstructs unique same-chain route and original session'
   assert.ok(Number.isFinite(after.deltaSeconds));
 });
 
-test('branching tunnel path refuses full-session reconstruction', () => {
+test('equivalent branching tunnel path waits for a second reliable fix', () => {
   const a = { ...road, id: 'a', nextRoadIds: ['b', 'c'], exits: [] };
   const b = { ...road, id: 'b', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: ['d'] };
   const c = { ...road, id: 'c', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: ['d'] };
@@ -389,7 +429,8 @@ test('branching tunnel path refuses full-session reconstruction', () => {
   tracker.invalidate('Tunnel signal lost');
   const state = tracker.update(at(d, 100, 60000));
   assert.equal(state.deltaSeconds, null);
-  assert.equal(state.deltaStatus, 'unresolved');
+  assert.equal(state.deltaStatus, 'recovering');
+  assert.equal(state.recovery.phase, 'pending');
 });
 
 test('piecewise limits and assumed history survive a mapped limit change', () => {
@@ -485,7 +526,7 @@ test('provisional contradiction cannot backdate an unrelated route and reset cle
   assert.equal(tracker.provisional, null);
 });
 
-test('provisional fork cannot invent a full-session delta', () => {
+test('provisional fork cannot invent a full-session delta from one fix', () => {
   const a = { ...road, id: 'a', nextRoadIds: ['b', 'c'] };
   const b = { ...road, id: 'b', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: ['d'] };
   const c = { ...road, id: 'c', coordinates: [[103.91, 1.35], [103.92, 1.35]], nextRoadIds: ['d'] };
@@ -495,7 +536,7 @@ test('provisional fork cannot invent a full-session delta', () => {
   tracker.invalidate('Tunnel GPS gap');
   const state = tracker.update(at(d, 100, 60000));
   assert.equal(state.deltaSeconds, null);
-  assert.equal(state.reconstructionStatus, 'unresolved');
+  assert.equal(state.reconstructionStatus, 'pending');
   assert.ok(tracker.provisional);
 });
 

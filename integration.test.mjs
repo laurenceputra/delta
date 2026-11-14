@@ -26,6 +26,51 @@ test('bundled ramp graph contains real joining, leaving, and multi-link transfer
   }
 });
 
+test('bundled MCE to ECP transfers retain verified directed connectors beyond four links', () => {
+  const links = new Map(bundle.rampGraph.links.map(link => [link.id, link]));
+  const paths = bundle.rampGraph.paths.filter(path => path.kind === 'transfer' &&
+    path.fromRoadId === 'osm-way-654863071' &&
+    ['osm-way-39477474', 'osm-way-635104341'].includes(path.toRoadId));
+  assert.deepEqual(paths.map(path => path.linkIds.length).sort((a, b) => a - b), [6, 14]);
+  for (const path of paths) {
+    assert.equal(byId.get(path.fromRoadId)?.ref, 'MCE');
+    assert.equal(byId.get(path.toRoadId)?.ref, 'ECP');
+    assert.ok(path.linkIds.every(id => links.has(id)), 'every directed connector is mapped');
+    assert.ok(path.lengthM > 1000, 'the transfer is not a fabricated zero-length shortcut');
+  }
+  const source = byId.get('osm-way-654863071');
+  const interior = source.routeNextRoadIds.find(link => link.roadId === 'osm-way-39477474');
+  assert.equal(interior.connectorIds.length, 14);
+  assert.ok(Math.abs(interior.entryOffsetM - 399.8) < 1,
+    'ECP entry begins about 400m into the destination way');
+  assert.deepEqual(interior.entryCoordinate,
+    paths.find(path => path.toRoadId === 'osm-way-39477474').endCoordinate);
+});
+
+test('real Marina approach reconstructs a directed MCE to ECP journey without using the opposite branch', () => {
+  const tracker = new Tracker(layered);
+  const approach = local.roads.find(road => road.id === 'osm-way-244842555');
+  const ecp = byId.get('osm-way-635104341');
+  const base = 1_800_000_000_000;
+  const fix = (road, distance, elapsed) => ({ ...sampleAt(road, distance),
+    accuracy: 5, speed: 25, timestamp: base + elapsed });
+  const first = tracker.update(fix(approach, 20, 0));
+  assert.equal(first.timingBasis, 'since entrance approach');
+  tracker.invalidate('GPS lost before MCE mainline', true);
+  const pending = tracker.update(fix(ecp, 60, 130000));
+  assert.equal(pending.deltaSeconds, null);
+  const recovered = tracker.update(fix(ecp, 100, 132000));
+  const route = tracker.recoveryRoute(approach, ecp, 20, 100, 10000);
+  assert.equal(route.routeCount, 1);
+  assert.deepEqual(route.refs, ['MCE', 'ECP']);
+  assert.equal(recovered.reconstructionStatus, 'reconstructed');
+  assert.equal(recovered.road.id, ecp.id);
+  assert.equal(recovered.entryTime, first.entryTime);
+  assert.equal(recovered.sessionId, first.sessionId);
+  assert.equal(recovered.expresswayEntryTime, null, 'no mainline boundary was observed');
+  assert.ok(Math.abs(recovered.deltaSeconds - (132 - route.reference)) < 0.02);
+});
+
 test('Marina Boulevard ramp has mapped directed MCE approach toward KPE', () => {
   const path = bundle.rampGraph.paths.find(path => path.kind === 'joining' &&
     path.fromRoadId === 'osm-way-649773813' && path.toRoadId === 'osm-way-265150827');
@@ -383,6 +428,123 @@ test('forked tunnel path does not invent full-gap reference timing', () => {
   assert.equal(after.entryTime, before.entryTime);
   assert.equal(after.deltaSeconds, null);
   assert.equal(after.deltaStatus, 'unresolved');
+});
+
+test('ambiguous tunnel recovery retires once after ten reliable mainline seconds, excluding weak and missing GPS', () => {
+  const road = (id, coordinates, nextRoadIds) => ({ id, ref: 'PIE', name: 'PIE',
+    direction: 'Eastbound', tunnel: true, speedLimit: 90, nextRoadIds, coordinates });
+  const a = road('budget-a', [[103.9, 1.35], [103.91, 1.35]], ['budget-b', 'budget-c']);
+  const b = road('budget-b', [[103.91, 1.35], [103.92, 1.35]], ['budget-d']);
+  const c = road('budget-c', [[103.91, 1.35], [103.915, 1.351], [103.92, 1.35]], ['budget-d']);
+  const d = road('budget-d', [[103.92, 1.35], [103.93, 1.35]], []);
+  const tracker = new Tracker({ roads: [a, b, c, d] });
+  const base = 1_800_000_000_000;
+  const fix = (segment, distance, ms, accuracy = 5) => ({ ...sampleAt(segment, distance),
+    accuracy, speed: 20, timestamp: base + ms });
+  tracker.update(fix(a, 50, 0));
+  const original = tracker.update(fix(a, 100, 2000));
+  tracker.invalidate('Tunnel GPS unavailable');
+  tracker.update(fix(d, 500, 100000));
+  const twoSeconds = tracker.update(fix(d, 550, 102000));
+  assert.equal(twoSeconds.entryTime, original.entryTime);
+  assert.equal(twoSeconds.deltaSeconds, null);
+  tracker.update(fix(d, 575, 104000, 90));
+  tracker.invalidate('Second weak GPS interval');
+  const resumed = tracker.update(fix(d, 600, 108000));
+  assert.equal(resumed.entryTime, original.entryTime);
+  const sixSeconds = tracker.update(fix(d, 650, 112000));
+  assert.equal(sixSeconds.entryTime, original.entryTime);
+  assert.equal(sixSeconds.deltaSeconds, null);
+  const retired = tracker.update(fix(d, 700, 116000));
+  assert.equal(retired.completedSession?.sessionId, original.sessionId);
+  assert.equal(retired.completedSession?.finalDeltaSeconds, null);
+  assert.equal(retired.incompleteHistory?.length, 1);
+  assert.equal(retired.incompleteHistory[0].sessionId, original.sessionId);
+  assert.equal(retired.timingBasis, 'since GPS recovery');
+  assert.equal(retired.entryTime, base + 108000, 'fallback uses the first fix of the final continuous recovery segment');
+  assert.notEqual(retired.sessionId, original.sessionId);
+  assert.equal(retired.road.id, d.id, 'current road must leave the frozen pre-gap road');
+  assert.equal(retired.visualRoad.id, d.id);
+  assert.equal(retired.gpsStatus, 'fresh');
+  assert.equal(retired.roadMatchStatus, 'identified');
+  assert.ok(retired.speedKmh > 0);
+  const subsequent = tracker.update(fix(d, 750, 118000));
+  assert.equal(subsequent.incompleteHistory.length, 1, 'fallback archives the old session once');
+  assert.equal(subsequent.entryTime, base + 108000);
+  assert.ok(Number.isFinite(subsequent.deltaSeconds), 'new pace starts from observed recovery segment');
+});
+
+test('materially equivalent tunnel forks can reconstruct without inventing a chosen physical branch', () => {
+  const road = (id, coordinates, nextRoadIds) => ({ id, ref: 'PIE', name: 'PIE',
+    direction: 'Eastbound', tunnel: true, speedLimit: 90, nextRoadIds, coordinates });
+  const a = road('equal-a', [[103.9, 1.35], [103.91, 1.35]], ['equal-b', 'equal-c']);
+  const b = road('equal-b', [[103.91, 1.35], [103.92, 1.35]], ['equal-d']);
+  const c = road('equal-c', [[103.91, 1.35], [103.92, 1.35]], ['equal-d']);
+  const d = road('equal-d', [[103.92, 1.35], [103.93, 1.35]], []);
+  const tracker = new Tracker({ roads: [a, b, c, d] });
+  const base = 1_800_000_000_000;
+  const fix = (segment, distance, ms) => ({ ...sampleAt(segment, distance),
+    accuracy: 5, speed: 20, timestamp: base + ms });
+  tracker.update(fix(a, 50, 0));
+  const original = tracker.update(fix(a, 100, 2000));
+  tracker.invalidate('Tunnel GPS unavailable');
+  const first = tracker.update(fix(d, 500, 100000));
+  assert.equal(first.deltaSeconds, null);
+  const recovered = tracker.update(fix(d, 550, 102000));
+  assert.equal(recovered.status, 'tracking');
+  assert.equal(recovered.entryTime, original.entryTime);
+  assert.equal(recovered.reconstructionStatus, 'reconstructed');
+  assert.ok(Number.isFinite(recovered.deltaSeconds));
+  assert.equal(recovered.completedSession, null);
+});
+
+test('accurate stationary fixes on a confirmed downstream mainline advance ambiguous recovery budget', () => {
+  const road = (id, coordinates, nextRoadIds) => ({ id, ref: 'PIE', name: 'PIE',
+    direction: 'Eastbound', tunnel: true, speedLimit: 90, nextRoadIds, coordinates });
+  const a = road('stopped-a', [[103.9, 1.35], [103.91, 1.35]], ['stopped-b', 'stopped-c']);
+  const b = road('stopped-b', [[103.91, 1.35], [103.92, 1.35]], ['stopped-d']);
+  const c = road('stopped-c', [[103.91, 1.35], [103.915, 1.351], [103.92, 1.35]], ['stopped-d']);
+  const d = road('stopped-d', [[103.92, 1.35], [103.93, 1.35]], []);
+  const tracker = new Tracker({ roads: [a, b, c, d] });
+  const base = 1_800_000_000_000;
+  const fix = (segment, distance, ms, stopped = false) => ({ ...sampleAt(segment, distance),
+    accuracy: 5, speed: stopped ? 0 : 20, heading: stopped ? null : sampleAt(segment, distance).heading,
+    timestamp: base + ms });
+  tracker.update(fix(a, 50, 0));
+  const original = tracker.update(fix(a, 100, 2000));
+  tracker.invalidate('Tunnel GPS unavailable');
+  tracker.update(fix(d, 500, 100000));
+  tracker.update(fix(d, 550, 102000));
+  const pause = tracker.update(fix(d, 550, 106000, true));
+  assert.equal(pause.entryTime, original.entryTime);
+  const fallback = tracker.update(fix(d, 550, 110000, true));
+  assert.equal(fallback.timingBasis, 'since GPS recovery');
+  assert.equal(fallback.completedSession.finalDeltaSeconds, null);
+  assert.equal(fallback.incompleteHistory.length, 1);
+});
+
+test('weak early-return fix breaks recovery interval without crediting unseen time', () => {
+  const road = (id, coordinates, nextRoadIds) => ({ id, ref: 'PIE', name: 'PIE',
+    direction: 'Eastbound', tunnel: true, speedLimit: 90, nextRoadIds, coordinates });
+  const a = road('weak-a', [[103.9, 1.35], [103.91, 1.35]], ['weak-b', 'weak-c']);
+  const b = road('weak-b', [[103.91, 1.35], [103.92, 1.35]], ['weak-d']);
+  const c = road('weak-c', [[103.91, 1.35], [103.915, 1.351], [103.92, 1.35]], ['weak-d']);
+  const d = road('weak-d', [[103.92, 1.35], [103.93, 1.35]], []);
+  const tracker = new Tracker({ roads: [a, b, c, d] });
+  const base = 1_800_000_000_000;
+  const fix = (segment, distance, ms, accuracy = 5) => ({ ...sampleAt(segment, distance),
+    accuracy, speed: 20, timestamp: base + ms });
+  tracker.update(fix(a, 50, 0));
+  const original = tracker.update(fix(a, 100, 2000));
+  tracker.invalidate('Tunnel GPS unavailable');
+  tracker.update(fix(d, 500, 100000));
+  tracker.update(fix(d, 550, 102000));
+  tracker.update(fix(d, 575, 104000, 200));
+  const resumed = tracker.update(fix(d, 600, 112000));
+  assert.equal(resumed.entryTime, original.entryTime);
+  assert.equal(resumed.incompleteHistory.length, 0);
+  const later = tracker.update(fix(d, 650, 118000));
+  assert.equal(later.incompleteHistory.length, 0, 'unreliable interval must not count toward ten seconds');
 });
 
 test('brief ramp candidate does not replace confirmed mainline or accrue time', () => {

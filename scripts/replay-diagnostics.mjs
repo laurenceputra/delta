@@ -67,7 +67,10 @@ function stateSummary(state) {
     visualRoadId: state.visualRoad?.id ?? null, gpsStatus: state.gpsStatus,
     roadMatchStatus: state.roadMatchStatus, timingStatus: state.timingStatus,
     sessionId: state.sessionId, entryTime: state.entryTime,
-    deltaSeconds: state.deltaSeconds ?? null, reconstructionStatus: state.reconstructionStatus };
+    deltaSeconds: state.deltaSeconds ?? null, reconstructionStatus: state.reconstructionStatus,
+    timingBasis: state.timingBasis ?? null, recoveryReason: state.recovery?.reasonCode ?? null,
+    recoveryPhase: state.recovery?.phase ?? null, recoveryReliableMs: state.recovery?.reliableMs ?? 0,
+    incompleteJourneyCount: state.incompleteHistory?.length ?? 0 };
 }
 
 export function replay({ events, manifest, legacy }, roadData, localData, options = {}) {
@@ -132,7 +135,8 @@ export function replay({ events, manifest, legacy }, roadData, localData, option
           compared[key] !== (summary[key] ?? null))) : [];
       const changed = !previous || summary.roadId !== previous.roadId ||
         summary.visualRoadId !== previous.visualRoadId || summary.gpsStatus !== previous.gpsStatus ||
-        summary.sessionId !== previous.sessionId || summary.reconstructionStatus !== previous.reconstructionStatus;
+        summary.sessionId !== previous.sessionId || summary.reconstructionStatus !== previous.reconstructionStatus ||
+        summary.recoveryReason !== previous.recoveryReason || summary.recoveryPhase !== previous.recoveryPhase;
       timeline.push({ seq: event.seq, time: at, type: event.type, ...summary,
         recorded: compared, mismatches, timingComparisonUnavailable: baselineIncomplete,
         roadChange: changed && summary.roadId !== previous?.roadId,

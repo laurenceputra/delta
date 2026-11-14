@@ -340,6 +340,37 @@ def main():
     out['rampGraph']['paths'] = paths
     out['rampGraph']['truncatedSearchCount'] = truncated_searches
     out['rampGraph']['unresolvedEndCount'] = unresolved_ends
+    for origin in roads:
+        for transition in origin['routeNextRoadIds']:
+            target = by_id[transition['roadId']]
+            transition['entryCoordinate'] = target['coordinates'][0]
+            transition['entryOffsetM'] = 0
+    # Keep the legacy route successor list in sync with verified directed
+    # cross-ref ramp paths, including paths longer than its old four-link cap.
+    for ramp_path in paths:
+        if ramp_path['kind'] != 'transfer':
+            continue
+        origin = by_id[ramp_path['fromRoadId']]
+        target = by_id[ramp_path['toRoadId']]
+        if origin['ref'] == target['ref']:
+            continue
+        transition = {'roadId': target['id'], 'connectorIds': ramp_path['linkIds'],
+                      'lengthM': ramp_path['lengthM']}
+        join = ramp_path['endCoordinate']
+        indices = [i for i, point in enumerate(target['coordinates'])
+                   if distance_m(point, join) < 0.02]
+        if not indices:
+            raise ValueError(f"ramp path does not meet destination way: {origin['id']} -> {target['id']}")
+        i = indices[0]
+        transition['entryCoordinate'] = target['coordinates'][i]
+        transition['entryOffsetM'] = round(sum(distance_m(a, b) for a, b in
+                                               zip(target['coordinates'][:i], target['coordinates'][1:i + 1])), 1)
+        existing = next((edge for edge in origin['routeNextRoadIds']
+                         if edge['roadId'] == transition['roadId'] and edge['connectorIds'] == transition['connectorIds']), None)
+        if existing:
+            existing.update(transition)
+        else:
+            origin['routeNextRoadIds'].append(transition)
     path.write_text(json.dumps(out, separators=(',', ':')))
     local_path = Path('dist/data/local-roads.json')
     local_path.write_text(json.dumps({'metadata': out['metadata'], 'roads': local}, separators=(',', ':')))

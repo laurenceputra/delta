@@ -1,6 +1,6 @@
 {
   "name": "delta-sg",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,7 @@
     "build": "npm run build:version && node scripts/build-site.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply DIAGNOSTICS_DB --local",
-    "test:browser": "node scripts/diagnostics-browser.test.mjs && node --test scripts/adaptive-layout.test.mjs"
+    "test:browser": "node scripts/diagnostics-browser.test.mjs && node --test scripts/adaptive-layout.test.mjs && node --test scripts/recovery-browser.test.mjs"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.10",

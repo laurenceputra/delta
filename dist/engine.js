@@ -164,6 +164,7 @@ export class Tracker {
     this.rampGraph = data?.rampGraph || { links: [], paths: [] };
     this.rampLinks = new Map(this.rampGraph.links.map(link => [link.id, link]));
     this.edges = new Map();
+    this.edgeEntries = new Map();
     const addEdge = (a, b) => {
       if (!this.byId.has(b)) return;
       if (!this.edges.has(a)) this.edges.set(a, new Set());
@@ -176,6 +177,9 @@ export class Tracker {
         const route = [...(link.connectorIds || []), link.roadId].filter(Boolean);
         let from = road.id;
         for (const id of route) { addEdge(from, id); from = id; }
+        if (Number.isFinite(link.entryOffsetM) && route.length)
+          this.edgeEntries.set(`${route.at(-2) || road.id}:${link.roadId}`,
+            link.entryOffsetM);
       }
     }
     this.predecessors = new Map();
@@ -187,8 +191,30 @@ export class Tracker {
     this.localRoads = (Array.isArray(local) ? local : local.roads || []).filter(r => vertices(r).length >= 2 && !this.byId.has(r.id));
     this.routeById = new Map([...this.roads, ...this.localRoads].map(r => [r.id, r]));
     for (const path of this.rampGraph.paths || []) {
-      if (path.kind !== 'joining') continue;
+      if (path.kind !== 'joining' && path.kind !== 'transfer') continue;
       const route = [path.fromRoadId, ...(path.linkIds || []), path.toRoadId];
+      if (path.kind === 'transfer') {
+        const destination = this.byId.get(path.toRoadId);
+        const endpoint = path.endCoordinate;
+        const entry = destination && Array.isArray(endpoint) && endpoint.length === 2 &&
+          project([endpoint[1], endpoint[0]], destination);
+        if (!this.byId.has(path.fromRoadId) || !entry || entry.distanceM > 2 ||
+            !path.linkIds?.length || path.linkIds.some(id =>
+              !this.rampLinks.has(id) || this.routeById.get(id)?.highway !== 'motorway_link') ||
+            route.slice(1, -1).some((id, index) => {
+              const previous = this.routeById.get(route[index]);
+              const next = this.routeById.get(id);
+              return !previous || !next ||
+                distanceM(vertices(previous).at(-1), vertices(next)[0]) > 2;
+            }) || distanceM(vertices(this.routeById.get(route.at(-2))).at(-1),
+              [endpoint[1], endpoint[0]]) > 2) continue;
+        const entryKey = `${route.at(-2)}:${path.toRoadId}`;
+        if (this.edgeEntries.has(entryKey) &&
+            (this.edgeEntries.get(entryKey) == null ||
+              Math.abs(this.edgeEntries.get(entryKey) - entry.alongM) > 1))
+          this.edgeEntries.set(entryKey, null);
+        else this.edgeEntries.set(entryKey, entry.alongM);
+      }
       for (let i = 1; i < route.length; i++)
         if (this.routeById.has(route[i - 1]) && this.routeById.has(route[i])) {
           if (!this.edges.has(route[i - 1])) this.edges.set(route[i - 1], new Set());
@@ -215,6 +241,7 @@ export class Tracker {
       }
     }
     this.options = { maxAccuracyM: 75, maxGapMs: 12000, maxMatchM: 85, switchHoldMs: 6000, ...options };
+    this.incompleteHistory = [];
     this.reset();
   }
 
@@ -245,6 +272,14 @@ export class Tracker {
     this.fullSessionAvailable = true;
     this.cumulativeReferenceAssumed = false;
     this.reconstructionStatus = 'none';
+    this.recovery = null;
+    this.recoveryReason = null;
+    this.recoveryReliableMs = 0;
+    this.recoveryLastReliableAt = null;
+    this.recoverySegmentAnchor = null;
+    this.recoveryStart = null;
+    this.sinceGpsRecovery = false;
+    this.incompleteJourney = this.incompleteHistory.at(-1) || null;
     this.provisional = null;
     this.sessionId = null;
     this.nextSessionId = (this.nextSessionId || 0) + 1;
@@ -285,6 +320,8 @@ export class Tracker {
 
   beginGap() {
     this.lastReliableLocal = null;
+    this.recoveryLastReliableAt = null;
+    this.recoverySegmentAnchor = null;
     if (!this.gapAnchor) {
       const provisionalAnchor = this.provisional ? {
         road: this.provisional.road, fix: this.provisional.fix,
@@ -295,10 +332,64 @@ export class Tracker {
       if (anchor) {
         this.gapAnchor = { ...anchor, id: ++this.gapSequence };
         this.gapStart = anchor.fix.time;
+        this.recoveryReliableMs = 0;
+        this.recoveryReason = 'awaiting-mainline';
       }
     }
     this.recoveryCandidate = null;
     this.reconstructionStatus = this.gapAnchor ? 'pending' : this.reconstructionStatus;
+    if (this.gapAnchor) this.recovery = { phase: 'pending', reasonCode: this.recoveryReason,
+      reliableMs: this.recoveryReliableMs };
+  }
+
+  retireUnresolvedGap(selected, time, accuracy, point) {
+    const anchor = this.gapAnchor;
+    const reasonCode = this.recoveryReason || 'route-unresolved';
+    const archived = { sessionId: this.sessionId, entryTime: this.entryTime,
+      approachTime: this.approachTime, sourceRef: anchor?.road?.ref ||
+        this.rampTransition?.destinationRef || null,
+      lastValidDeltaSeconds: this.lastValidDeltaSeconds,
+      lastValidDeltaAt: this.lastValidDeltaAt, finalDeltaSeconds: null,
+      finalTimingStatus: 'incomplete', reasonCode, endedAt: time,
+      status: 'incomplete-gps-recovery' };
+    this.incompleteHistory.push(archived);
+    if (this.incompleteHistory.length > 20) this.incompleteHistory.shift();
+    const history = this.incompleteHistory;
+    const visualRoad = this.visualRoad, visualCandidate = this.visualCandidate;
+    const visualSpeedKmh = this.visualSpeedKmh;
+    const reliableMs = this.recoveryReliableMs;
+    const segmentAnchor = this.recoverySegmentAnchor;
+    const segmentRoute = segmentAnchor && this.recoveryRoute(segmentAnchor.road, selected.road,
+      segmentAnchor.alongM, selected.match.alongM,
+      (time - segmentAnchor.time) / 1000 * 55 + accuracy * 3);
+    const observedSegment = segmentRoute?.reference != null && segmentRoute.travel >= 0 &&
+      time - segmentAnchor.time <= this.options.maxGapMs;
+    const recoveryStart = observedSegment ? { time: segmentAnchor.time,
+      endRoadId: selected.road.id, elapsed: (time - segmentAnchor.time) / 1000,
+      reference: segmentRoute.reference, assumed: segmentRoute.assumed } :
+      { time, endRoadId: selected.road.id, elapsed: 0, reference: 0,
+        assumed: limitAssumedAt(selected.road, selected.match.alongM) };
+    this.reset();
+    this.incompleteHistory = history;
+    this.incompleteJourney = archived;
+    this.completedSession = archived;
+    this.sinceGpsRecovery = true;
+    this.recoveryStart = recoveryStart;
+    this.recoveryReason = reasonCode;
+    this.recovery = { phase: 'retired', reasonCode, reliableMs };
+    this.visualRoad = visualRoad;
+    this.visualCandidate = visualCandidate;
+    this.visualSpeedKmh = visualSpeedKmh;
+    this.gpsStatus = 'fresh';
+    this.lastTime = time;
+    this.lastAcceptedFixAt = Date.now();
+    this.entryTime = recoveryStart.time;
+    this.entrySource = 'gps-recovery';
+    this.entryConfidence = 'approximate';
+    this.entryUncertaintyMs = Math.round(accuracy / 2 * 1000);
+    this.sessionId = `session-${this.nextSessionId++}`;
+    this.provisional = { road: selected.road, fix: { time, alongM: selected.match.alongM, point },
+      accuracy, elapsed: 0, reference: 0, assumed: false };
   }
 
   heldState(status, reason, speedKmh = null, candidateRoad = null, time = Date.now(), acceptedFix = false) {
@@ -428,10 +519,14 @@ export class Tracker {
   decorate(state, time = Date.now()) {
     this.tick(time, false);
     const gpsStatus = this.gpsStatus;
-    const roadMatchStatus = state.acceptedFix && state.status !== 'identifying' && state.road ?
+    const visuallyConfirmedMainline = state.acceptedFix && this.visualRoad?.isExpressway &&
+      this.visualCandidate == null && this.visualRoad.id === state.candidateRoad?.id;
+    const roadMatchStatus = visuallyConfirmedMainline ||
+      state.acceptedFix && state.status !== 'identifying' && state.road ?
       'identified' : state.status === 'identifying' || state.candidateRoad || this.visualRoad ?
         'checking' : 'unresolved';
-    const timingBasis = this.timingFromMainline ? 'since mainline entry' :
+    const timingBasis = this.sinceGpsRecovery ? 'since GPS recovery' :
+      this.timingFromMainline ? 'since mainline entry' :
       this.approachTime != null ? 'since entrance approach' :
       this.expresswayEntryTime != null ? 'since mainline entry' : state.timingBasis;
     this.state = { ...state, visualRoad: this.visualRoad,
@@ -441,6 +536,8 @@ export class Tracker {
       visualLimitSource: this.visualLimitKmh == null ? null :
         this.visualLimitAssumed ? 'Assumed 50 km/h reference' : 'OSM maxspeed tag',
       previousDelta: this.previousDelta, completedSession: this.completedSession,
+      incompleteJourney: this.incompleteJourney, incompleteHistory: this.incompleteHistory,
+      recovery: this.recovery, recoveryReason: this.recoveryReason,
       sessionId: this.sessionId, entryTime: this.entryTime,
       approachTime: this.approachTime, expresswayEntryTime: this.expresswayEntryTime,
       mainlineEntryTime: this.expresswayEntryTime, timingBasis,
@@ -456,6 +553,8 @@ export class Tracker {
     const time = timestampMs(now);
     if (updateState) this.state = { ...this.state, previousDelta: this.previousDelta,
       completedSession: this.completedSession,
+      incompleteJourney: this.incompleteJourney, incompleteHistory: this.incompleteHistory,
+      recovery: this.recovery, recoveryReason: this.recoveryReason,
       sessionId: this.sessionId,
       entryTime: this.entryTime,
       lastValidDeltaSeconds: this.lastValidDeltaSeconds,
@@ -472,7 +571,8 @@ export class Tracker {
         timingStatus: this.state.timingStatus, approachTime: this.approachTime,
         expresswayEntryTime: this.expresswayEntryTime, sessionId: this.sessionId,
         gapAnchorRoadId: this.gapAnchor?.road.id || null,
-        reconstructionStatus: this.reconstructionStatus,
+        reconstructionStatus: this.reconstructionStatus, recovery: this.recovery,
+        incompleteJourney: this.incompleteJourney,
         rampTransition: this.rampTransition } };
   }
 
@@ -485,11 +585,58 @@ export class Tracker {
   }
 
   forwardPath(from, to) {
+    if (from?.nextRoadIds?.includes(to?.id)) return [from, to];
     return this.uniquePath(from, to, 500);
   }
 
   gapPath(from, to) {
     return this.uniquePath(from, to, 50000);
+  }
+
+  recoveryRoute(from, to, fromM, toM, maxTravelM = 50000, requiredLinkId = null) {
+    if (!from || !to) return null;
+    const canReach = new Set([to.id]);
+    const queue = [to.id];
+    for (let i = 0; i < queue.length; i++)
+      for (const predecessor of this.predecessors.get(queue[i]) || [])
+        if (!canReach.has(predecessor)) {
+          canReach.add(predecessor);
+          queue.push(predecessor);
+        }
+    if (!canReach.has(from.id)) return { reasonCode: 'no-directed-route' };
+    const stack = [{ road: from, path: [from], seen: new Set([from.id]), length: 0 }];
+    let result = null, expansions = 0, routes = 0;
+    while (stack.length && expansions++ < 20000) {
+      const item = stack.pop();
+      if (item.road.id === to.id) {
+        if (requiredLinkId && !item.seen.has(requiredLinkId)) continue;
+        if (++routes > 100) return { reasonCode: 'ambiguous-route' };
+        const path = item.path;
+        const reference = this.gapReference(path, fromM, toM);
+        const travel = this.pathTravel(path, fromM, toM);
+        const assumed = this.pathAssumed(path, fromM, toM);
+        const refs = path.filter(road => this.byId.has(road.id) && !road.connector)
+          .map(road => road.ref || road.id).filter((ref, i, all) => i === 0 || ref !== all[i - 1]);
+        const candidate = { reference, travel, assumed, refs, routeCount: routes };
+        if (reference == null || !Number.isFinite(travel)) continue;
+        if (result &&
+            (Math.abs(result.reference - reference) > 1e-6 ||
+              Math.abs(result.travel - travel) > 0.01 || result.assumed !== assumed ||
+              JSON.stringify(result.refs) !== JSON.stringify(refs)))
+          return { reasonCode: 'ambiguous-route' };
+        result = candidate;
+        continue;
+      }
+      for (const next of this.successors(item.road)) {
+        if (item.seen.has(next.id) || !canReach.has(next.id)) continue;
+        const length = item.length + (next.id === to.id ? 0 : next.lengthM || roadLengthM(next));
+        if (length <= Math.min(50000, maxTravelM + fromM))
+          stack.push({ road: next, path: [...item.path, next],
+          seen: new Set([...item.seen, next.id]), length });
+      }
+    }
+    return expansions >= 20000 ? { reasonCode: 'route-search-limit' } :
+      result || { reasonCode: 'no-directed-route' };
   }
 
   uniquePath(from, to, maxM) {
@@ -516,8 +663,10 @@ export class Tracker {
   gapReference(path, fromM, toM) {
     let seconds = 0;
     for (let i = 0; i < path.length; i++) {
-      const part = referenceTime(path[i], i ? 0 : fromM,
-        i === path.length - 1 ? toM : path[i].lengthM || roadLengthM(path[i]));
+      const entry = this.pathEntryAt(path, i, fromM);
+      const end = i === path.length - 1 ? toM : path[i].lengthM || roadLengthM(path[i]);
+      if (!Number.isFinite(entry) || end < entry - 2) return null;
+      const part = referenceTime(path[i], Math.min(entry, end), end);
       if (part == null) return null;
       seconds += part;
     }
@@ -525,8 +674,25 @@ export class Tracker {
   }
 
   pathAssumed(path, fromM, toM) {
-    return path.some((road, i) => referenceAssumedOn(road, i ? 0 : fromM,
+    return path.some((road, i) => referenceAssumedOn(road, this.pathEntryAt(path, i, fromM),
       i === path.length - 1 ? toM : road.lengthM || roadLengthM(road)));
+  }
+
+  pathEntryAt(path, index, fromM) {
+    if (index === 0) return fromM;
+    const key = `${path[index - 1].id}:${path[index].id}`;
+    return this.edgeEntries.has(key) ? this.edgeEntries.get(key) ?? NaN : 0;
+  }
+
+  pathTravel(path, fromM, toM) {
+    let distance = 0;
+    for (let i = 0; i < path.length; i++) {
+      const entry = this.pathEntryAt(path, i, fromM);
+      const end = i === path.length - 1 ? toM : path[i].lengthM || roadLengthM(path[i]);
+      if (!Number.isFinite(entry) || end < entry - 2) return NaN;
+      distance += end - Math.min(entry, end);
+    }
+    return distance;
   }
 
   limitUncertain(road, at, accuracy) {
@@ -576,15 +742,7 @@ export class Tracker {
   referenceAcross(from, fromM, to, toM) {
     if (from.id === to.id) return referenceTime(from, fromM, toM);
     const path = this.forwardPath(from, to);
-    if (!path) return null;
-    let seconds = 0;
-    for (let i = 0; i < path.length; i++) {
-      const part = referenceTime(path[i], i === 0 ? fromM : 0,
-        i === path.length - 1 ? toM : path[i].lengthM || roadLengthM(path[i]));
-      if (part == null) return null;
-      seconds += part;
-    }
-    return seconds;
+    return path ? this.gapReference(path, fromM, toM) : null;
   }
 
   nearby(point) {
@@ -881,13 +1039,41 @@ export class Tracker {
     if (this.gapAnchor) {
       const anchor = this.gapAnchor;
       if (selectedExpressway) {
-        const path = this.gapPath(anchor.road, selected.road);
-        const reference = path && this.gapReference(path, anchor.fix.alongM, selected.match.alongM);
-        const travel = path ? path.slice(0, -1).reduce((sum, r, i) => sum +
-          (r.lengthM || roadLengthM(r)) - (i ? 0 : anchor.fix.alongM), 0) +
-          selected.match.alongM - (path.length === 1 ? anchor.fix.alongM : 0) : -1;
+        const stationaryOnKnownMainline = !headingUseful &&
+          this.visualRoad?.isExpressway && this.visualRoad.id === selected.road.id &&
+          !candidates.some(candidate => candidate.road.id !== selected.road.id &&
+            this.byId.has(candidate.road.id) &&
+            candidate.score - selected.score < 12 &&
+            candidate.match.distanceM - selected.match.distanceM < Math.max(5, accuracy / 2));
+        const reliable = accuracy <= 30 && selected.match.distanceM <= 30 &&
+          (headingUseful ? selected.turn <= 45 : stationaryOnKnownMainline);
+        if (reliable) {
+          const priorReliable = this.recoveryLastReliableAt;
+          const connectedReliable = priorReliable &&
+            (this.sameLogicalRoad(priorReliable.road, selected.road) ||
+              this.edges.get(priorReliable.road.id)?.has(selected.road.id));
+          if (connectedReliable)
+            this.recoveryReliableMs += Math.max(0, time - priorReliable.time);
+          else this.recoverySegmentAnchor = { road: selected.road,
+            alongM: selected.match.alongM, time };
+          this.recoveryLastReliableAt = { road: selected.road, time };
+        } else {
+          this.recoveryLastReliableAt = null;
+          this.recoverySegmentAnchor = null;
+        }
         const dt = (time - anchor.fix.time) / 1000;
-        if (path && reference != null && dt > 0 && travel >= 0 && travel <= dt * 55 + accuracy * 3) {
+        const observedTransferLink = this.rampTransition?.classification === 'transfer' &&
+          this.lastRampFix?.time > anchor.fix.time ? this.lastRampFix.road.id : null;
+        const route = reliable ? this.recoveryRoute(anchor.road, selected.road,
+          anchor.fix.alongM, selected.match.alongM, dt * 55 + accuracy * 3,
+          observedTransferLink) : null;
+        const plausible = route && route.reference != null && dt > 0 && route.travel >= 0 &&
+          route.travel <= dt * 55 + accuracy * 3;
+        this.recoveryReason = !reliable ? 'weak-mainline-fix' : route?.reasonCode ||
+          (!plausible ? 'implausible-travel' : 'confirming-route');
+        this.recovery = { phase: 'pending', reasonCode: this.recoveryReason,
+          reliableMs: this.recoveryReliableMs };
+        if (plausible) {
           const prior = this.recoveryCandidate;
           if (!prior || !this.sameLogicalRoad(prior.road, selected.road) || time - prior.time < 1000) {
             if (!prior || !this.sameLogicalRoad(prior.road, selected.road))
@@ -898,9 +1084,8 @@ export class Tracker {
           }
           if (!this.appliedGaps.has(anchor.id)) {
             this.elapsedSeconds = anchor.elapsed + dt;
-            this.referenceSeconds = anchor.reference + reference;
-            this.cumulativeReferenceAssumed = anchor.assumed ||
-              this.pathAssumed(path, anchor.fix.alongM, selected.match.alongM);
+            this.referenceSeconds = anchor.reference + route.reference;
+            this.cumulativeReferenceAssumed = anchor.assumed || route.assumed;
             this.appliedGaps.add(anchor.id);
           }
           this.currentRoad = selected.road;
@@ -909,6 +1094,10 @@ export class Tracker {
           this.deltaValid = true;
           this.fullSessionAvailable = true;
           this.reconstructionStatus = 'reconstructed';
+          this.recoveryReason = route.routeCount > 1 ? 'equivalent-directed-routes' :
+            'unique-directed-route';
+          this.recovery = { phase: 'reconstructed', reasonCode: this.recoveryReason,
+            reliableMs: this.recoveryReliableMs };
           this.sessionStartMs = this.entryTime;
           this.provisional = null;
           this.gapAnchor = null;
@@ -918,10 +1107,14 @@ export class Tracker {
         } else {
           this.recoveryCandidate = null;
           this.reconstructionStatus = 'unresolved';
-          return this.heldState('identifying', 'Route through GPS gap unresolved', speedKmh,
+          if (reliable && this.recoveryReliableMs >= 10000)
+            this.retireUnresolvedGap(selected, time, accuracy, point);
+          else return this.heldState('identifying', 'Route through GPS gap unresolved', speedKmh,
             { id: selected.road.id, name: selected.road.name, kind: 'expressway' }, time, true);
         }
       } else {
+        this.recoveryLastReliableAt = null;
+        this.recoverySegmentAnchor = null;
         const prior = this.recoveryCandidate;
         this.recoveryCandidate = prior && this.sameLogicalRoad(prior.road, selected.road) ? prior :
           { road: selected.road, time };
@@ -1028,15 +1221,21 @@ export class Tracker {
       this.referenceSeconds = 0;
       this.deltaValid = !!this.previous;
       this.cumulativeReferenceAssumed = false;
-      this.reconstructionStatus = 'none';
+      this.reconstructionStatus = this.sinceGpsRecovery ? 'unresolved' : 'none';
       if (selectedExpressway && this.joinEvidence && this.pending.firstRoad.id === selected.road.id) {
         this.elapsedSeconds = this.joinEvidence.elapsed;
         this.referenceSeconds = this.joinEvidence.reference;
         this.cumulativeReferenceAssumed = this.joinEvidence.assumed;
       }
+      if (selectedExpressway && this.sinceGpsRecovery &&
+          this.recoveryStart?.endRoadId === this.pending.firstRoad.id) {
+        this.elapsedSeconds = this.recoveryStart.elapsed;
+        this.referenceSeconds = this.recoveryStart.reference;
+        this.cumulativeReferenceAssumed = this.recoveryStart.assumed;
+      }
       if (selectedExpressway) {
         if (!(currentExpressway && !this.fullSessionAvailable && this.entryTime != null)) {
-          if (this.approachTime == null) {
+          if (this.approachTime == null && !this.sinceGpsRecovery) {
             this.entryTime = this.joinEvidence?.entryTime || this.pending.firstTime;
             this.entrySource = this.joinEvidence ? 'mapped-ramp-boundary-estimate' : 'first-mainline-fix';
           }
@@ -1100,8 +1299,7 @@ export class Tracker {
     const connected = !!path;
     const dt = this.previous ? (time - this.previous.time) / 1000 : 0;
     const progress = this.previous && sameRoad ? match.alongM - this.previous.alongM :
-      this.previous && connected ? path.slice(0, -1).reduce((sum, r, i) => sum +
-        (r.lengthM || roadLengthM(r)) - (i === 0 ? this.previous.alongM : 0), 0) + match.alongM : 0;
+      this.previous && connected ? this.pathTravel(path, this.previous.alongM, match.alongM) : 0;
     const implausible = this.previous && (sameRoad || connected) &&
       (progress < -35 || progress > Math.max(120, dt * 55 + accuracy * 2));
     if ((!sameRoad && !connected) || implausible) {
