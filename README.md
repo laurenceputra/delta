@@ -1,6 +1,6 @@
 # Delta SG
 
-A Cloudflare-hostable foreground PWA prototype for Singapore road names and GPS speed, with expressway-only reference timing. Optional diagnostics can be recorded locally and explicitly uploaded while parked. No paid map APIs or navigation destination are required.
+A Cloudflare-hostable foreground driving companion for Singapore: know your speed and see what is ahead. Everyday view prioritises speed, limit references and upcoming expressway exits; Pace adds expressway-only reference timing. Optional diagnostics can be recorded locally and explicitly uploaded while parked. No paid map APIs or navigation destination are required.
 
 ## Run
 
@@ -22,11 +22,12 @@ The Sites deployment remains public; the upload API and analysis tools have sepa
 ## Product behaviour
 
 - Identify mapped public motor roads and ramps using a spatial index, heading and recent fixes. Display GPS speed everywhere; change the visible road after two seconds of reliable evidence while independently retaining timing for recovery.
-- Enable delta and upcoming exits only on confirmed mainlines of the ten expressways. Suppress timing at ambiguous local-road/expressway overlaps.
+- Switch Everyday / Pace on the main screen without restarting the tracker. The device saves the view preference. Fresh installs default to Everyday; identifiable existing installs retain Pace. Both views show critical GPS and overspeed signals; timing and exit projections are shown only in Pace. Upcoming exits require confirmed expressway tracking.
 - Light, Dark and System themes follow a saved device preference. The separately labelled Screen awake control manages wake lock.
 - Follow the current mainline, show up to three mapped exits ahead, update as exits pass.
 - Compare actual elapsed time with reference travel time over matched distance. Negative delta means ahead/faster; positive means behind/slower. A positive delta is not permission to exceed the posted speed limit.
-- Starting midway may anchor a provisional clock at the first credible mainline fix, before route confirmation; this is not a physical entrance crossing. If GPS disappears before confirmation, the provisional road and clock remain visible, but speed, delta and exits are withheld until a plausible directed route is confirmed. During a GPS gap, live speed and pace disappear while the entry clock and last confirmed road remain. A unique directed mapped path can restore estimated full-session timing; ambiguous routes keep the entry clock but withhold a full-session pace comparison.
+- Preserve early entrance evidence through GPS loss. Retain a separate latest reliable pre-entry timing anchor, upgrading it to an observed boundary fix or a bracketed crossing when supported. Unobserved crossing times stay estimated. Shared ramps carry candidate destinations rather than an originating expressway's inherited identity; confirmed new local-road entries cannot reuse an unrelated old delta.
+- During a GPS gap, speed is unavailable and the last known road, limit and pace are clearly labelled. Supported directed routes can restore estimated full-session timing with piecewise limits. After ten seconds of reliable unresolved recovery evidence, archive the incomplete earlier journey and start a distinct session since GPS recovery. Weak or missing intervals do not consume that recovery budget.
 - Missing or implausible speed tags use a visibly marked assumed 50 km/h reference. The current limit and cumulative use of assumed reference segments are shown separately. Missing exits produce no invented destinations.
 - Exit projections assume the current GPS speed continues to each exit; reference time still follows every mapped or assumed speed-limit segment. Projections disappear when stopped or GPS is stale. They are estimates, not a recommended speed.
 - GPS gaps, tunnels, parallel roads and flyovers can prevent dependable tracking. This is advisory software, not a calibrated speedometer or enforcement-compliance assessment.

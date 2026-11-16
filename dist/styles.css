@@ -209,3 +209,83 @@ body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{displ
 :root[data-theme="light"] :is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-caution{color:#8c5a00}
 :root[data-theme="light"] :is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-danger{color:#b32222}
 :root[data-theme="light"] :is(#speedValue,.delta-readout,.exit-delta,.speed-warning).reading-neutral{color:#687c6c}
+
+/* Both views share one tracker; the switch changes presentation only. */
+.view-switch{display:grid;grid-template-columns:1fr 1fr;flex:none;gap:3px;margin:7px 0 4px;padding:3px;border:1px solid #46594a;border-radius:8px;background:#17211a}
+.view-switch button{min-width:0;min-height:44px;padding:8px 12px;border:0;border-radius:5px;background:transparent;color:#aebfaf;font-weight:800;font-size:14px;letter-spacing:.04em}
+.view-switch button[aria-pressed="true"]{background:#d5fa5a;color:#17231a}
+:root[data-theme="light"] .view-switch{background:#e0e9dd;border-color:#a7bca5}
+:root[data-theme="light"] .view-switch button{color:#3d5941}
+:root[data-theme="light"] .view-switch button[aria-pressed="true"]{background:#496f1c;color:#fff}
+.session-strip{min-height:64px;height:auto;gap:10px;letter-spacing:0;text-transform:none}
+.status-copy{display:flex;flex:1;min-width:0;flex-direction:column;justify-content:center;gap:2px}
+.status-copy strong{font-size:clamp(20px,2.2vw,24px);line-height:1.06;color:#f2f8ee;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.status-copy small{font-size:clamp(14px,1.4vw,16px);line-height:1.12;font-weight:600;color:#a8bba9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.status-icon{display:grid;place-items:center;flex:none;width:24px;height:28px;color:#ffd166}
+.status-icon.danger{color:#ff6965}
+.signal-dot.danger{background:#ff6965;box-shadow:0 0 10px #ff696555}
+.signal-dot.caution{background:#ffd166;box-shadow:0 0 10px #ffd16655}
+.session-strip:has(.signal-dot.danger) .status-copy strong{color:#ff6965}
+.session-strip:has(.signal-dot.caution) .status-copy strong{color:#ffd166}
+:root[data-theme="light"] .status-copy strong{color:#17231a}
+:root[data-theme="light"] .status-copy small{color:#506a53}
+:root[data-theme="light"] .status-icon{color:#8c5a00}
+:root[data-theme="light"] .status-icon.danger{color:#b32222}
+:root[data-theme="light"] .session-strip:has(.signal-dot.danger) .status-copy strong{color:#b32222}
+:root[data-theme="light"] .session-strip:has(.signal-dot.caution) .status-copy strong{color:#8c5a00}
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .instrument-grid{grid-template-columns:minmax(0,1fr)}
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .delta-card{display:none}
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(86px,18vw,150px)}
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .speed-readout{justify-self:center;align-self:center;flex-direction:row;align-items:baseline;gap:8px}
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .speed-readout #speedValue,
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .speed-unit{align-self:auto}
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .exit-list li{grid-template-columns:minmax(0,1fr) auto}
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .exit-list .exit-delta,
+:root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) #exitForecastLabel{display:none}
+@media(max-width:600px){
+  .view-switch{margin:4px 0 2px}
+  .session-strip,body:has(.drive-panel:not([hidden])) .session-strip{height:58px;min-height:58px}
+  .session-strip .mode-badge{max-width:78px;font-size:9px;line-height:1.15;text-align:center}
+  .status-copy strong{font-size:20px}
+  .status-copy small{font-size:14px}
+  body:has(.drive-panel:not([hidden])) .speed-card,
+  body:has(.drive-panel:not([hidden])) .delta-card{height:clamp(155px,calc((var(--visible-height,100dvh) - 350px)*.45),285px)}
+  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(54px,18vw,105px)}
+  body:has(.drive-panel:not([hidden])) .delta-readout{font-size:clamp(45px,14vw,94px)}
+  :root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(88px,30vw,145px)}
+  :root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .limit-stack strong{font-size:clamp(23px,7vw,34px)}
+}
+@media(max-height:500px) and (orientation:landscape){
+  .view-switch{margin:1px 0;padding:1px}
+  .view-switch button{min-height:44px;padding:5px}
+  .session-strip,body:has(.drive-panel:not([hidden])) .session-strip{height:44px;min-height:44px}
+  .status-copy strong{font-size:20px}
+  .status-copy small{font-size:14px}
+  body:has(.drive-panel:not([hidden])) .drive-panel{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);grid-template-rows:28px minmax(0,1fr) 12px;column-gap:10px;row-gap:2px;min-height:0}
+  body:has(.drive-panel:not([hidden])) .drive-topline{grid-column:1/-1;grid-row:1;height:28px;margin:0;overflow:hidden}
+  body:has(.drive-panel:not([hidden])) .road-heading{margin-top:0}
+  body:has(.drive-panel:not([hidden])) .road-heading strong{font-size:27px}
+  body:has(.drive-panel:not([hidden])) .instrument-grid{grid-column:1;grid-row:2;align-self:stretch;min-height:0}
+  body:has(.drive-panel:not([hidden])) .speed-card,
+  body:has(.drive-panel:not([hidden])) .delta-card{height:100%;min-height:0;padding:8px 10px}
+  body:has(.drive-panel:not([hidden])) .speed-card{row-gap:3px}
+  body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(54px,9vh,72px)}
+  body:has(.drive-panel:not([hidden])) .delta-readout{font-size:clamp(54px,9vh,72px)}
+  body:has(.drive-panel:not([hidden])) .lower-grid{grid-column:2;grid-row:2/4;min-height:0;margin:0}
+  body:has(.drive-panel:not([hidden])) .exits-card{height:100%;padding:6px 10px}
+  body:has(.drive-panel:not([hidden])) .driving-reminder{grid-column:1;grid-row:3;margin:0;font-size:9px;line-height:12px}
+  :root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(70px,14vh,100px)}
+}
+@media(max-width:380px){
+  .session-strip,body:has(.drive-panel:not([hidden])) .session-strip{height:50px;min-height:50px}
+  body:has(.drive-panel:not([hidden])) .exits-card .section-heading h2{font-size:22px;margin:0 0 2px}
+  :root[data-dashboard-view="everyday"] body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:80px}
+  :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) .speed-card,
+  :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) .delta-card{height:163px}
+  :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:54px}
+  :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) .speed-readout{flex-direction:row;align-items:baseline;gap:5px}
+  :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) .speed-readout #speedValue,
+  :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) .speed-unit{align-self:auto}
+  :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) .delta-card .card-top{flex-direction:column;align-items:flex-start;gap:2px}
+  :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) #deltaLabel{font-size:8px;letter-spacing:0;line-height:1.1;text-align:left;white-space:nowrap}
+}

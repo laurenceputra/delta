@@ -1197,6 +1197,33 @@ test('real ECP to KPE three-link ramp transfer retains one expressway session', 
   assert.equal(kpe.completedSession, null);
 });
 
+test('plausible ECP to KPE connector fixes keep elapsed pace continuous', () => {
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  let ms = 0;
+  const at = (id, fraction, increment = 2000) => {
+    const road = tracker.routeById.get(id);
+    return tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+      accuracy: 5, speed: 15, timestamp: base + (ms += increment) });
+  };
+  at('osm-way-670121242', .2);
+  const first = at('osm-way-670121242', .7);
+  const states = [
+    at('osm-way-32605139', .2),
+    at('osm-way-32605139', .6, 4000),
+    at('osm-way-32605139', .95, 4000),
+    at('osm-way-140562826', .2),
+    at('osm-way-528189241', .2),
+    at('osm-way-633601611', .1),
+  ];
+  assert.ok(states.slice(0, -1).every(state => state.road.kind === 'ramp'));
+  assert.ok(states.every(state => state.sessionId === first.sessionId));
+  assert.ok(states.every(state => state.completedSession === null));
+  assert.ok(states.every(state => Number.isFinite(state.deltaSeconds)));
+  assert.ok(states.every((state, index) => state.elapsedSeconds >=
+    (index ? states[index - 1].elapsedSeconds : first.elapsedSeconds)));
+});
+
 test('real Upper Cross joining ramp starts CTE timing at the mainline boundary', () => {
   const tracker = new Tracker(layered);
   const base = 1_800_000_000_000;
@@ -1225,6 +1252,108 @@ test('real Upper Cross joining ramp starts CTE timing at the mainline boundary',
   assert.equal(successor.status, 'tracking');
   assert.equal(successor.entryTime, cte.entryTime);
   assert.equal(successor.rampTransition, null);
+});
+
+test('Braddell local approach starts a fresh CTE session after an old PIE session', () => {
+  const tracker = new Tracker(layered);
+  const shared = tracker.routeById.get('osm-way-638420385');
+  assert.equal(shared.connector, true);
+  assert.equal(shared.ref, null);
+  assert.equal(shared.name, null);
+  assert.equal(tracker.roadView(shared).kind, 'ramp');
+  const base = 1_800_000_000_000;
+  let ms = 0;
+  const at = (id, fraction) => {
+    const road = byId.get(id) || local.roads.find(item => item.id === id);
+    return tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+      accuracy: 5, speed: 15, timestamp: base + (ms += 2000) });
+  };
+  at('osm-way-479175770', .2);
+  const pie = at('osm-way-479175770', .7);
+  assert.equal(pie.status, 'tracking');
+  at('osm-way-651970096', .2);
+  at('osm-way-651970096', .7);
+  at('osm-way-37583313', .2);
+  at('osm-way-37583313', .7);
+  const newApproach = at('osm-way-482107090', .5);
+  assert.notEqual(newApproach.sessionId, pie.sessionId);
+  assert.equal(newApproach.incompleteJourney.reasonCode, 'new-proven-entry');
+  assert.equal(newApproach.incompleteJourney.sessionId, pie.sessionId);
+  assert.equal(newApproach.incompleteJourney.finalDeltaSeconds, null);
+  assert.equal(newApproach.deltaSeconds, null);
+  const ramp = at('osm-way-652008638', .5);
+  assert.equal(ramp.rampTransition.classification, 'joining');
+  assert.equal(ramp.road.kind, 'ramp');
+  const finalRamp = at('osm-way-482107093', .5);
+  assert.equal(finalRamp.rampTransition.destinationRef, 'CTE');
+  assert.equal(finalRamp.approachTime, base + 12000);
+  assert.equal(finalRamp.entryTimingAnchorAt, base + 18000);
+  assert.equal(finalRamp.entryTimingSource, 'latest-reliable-ramp-fix');
+  assert.equal(finalRamp.timingBasis, 'since entrance approach');
+  assert.equal(finalRamp.incompleteHistory.length, 1);
+  const cte = at('osm-way-638056920', .1);
+  assert.equal(cte.status, 'tracking');
+  assert.equal(cte.sessionId, newApproach.sessionId);
+  assert.notEqual(cte.entryTime, pie.entryTime);
+  assert.equal(cte.incompleteHistory.length, 1);
+});
+
+test('GPS outage keeps the visual Braddell Road limit after PIE departure', () => {
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  let ms = 0;
+  const at = (id, fraction) => {
+    const road = tracker.routeById.get(id);
+    return tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+      accuracy: 5, speed: 15, timestamp: base + (ms += 2000) });
+  };
+  at('osm-way-479175770', .2);
+  at('osm-way-479175770', .7);
+  at('osm-way-651970096', .2);
+  const braddell = at('osm-way-651970096', .7);
+  assert.equal(braddell.visualRoad.kind, 'local');
+  assert.equal(braddell.visualLimitKmh, 50);
+  const outage = tracker.invalidate('GPS unavailable');
+  assert.equal(outage.lastKnownLimitKmh, 50);
+  assert.equal(outage.lastKnownLimitAssumed, false);
+});
+
+test('Braddell tunnel recovery uses latest reliable ramp fix and remaining ramp reference', () => {
+  const tracker = new Tracker(layered);
+  const base = 1_800_000_000_000;
+  let ms = 0;
+  const at = (id, fraction, increment = 2000) => {
+    const road = byId.get(id) || local.roads.find(item => item.id === id);
+    return tracker.update({ ...sampleAt(road, roadLengthM(road) * fraction),
+      accuracy: 5, speed: 15, timestamp: base + (ms += increment) });
+  };
+  for (const [id, fraction] of [
+    ['osm-way-651970096', .2], ['osm-way-651970096', .7],
+    ['osm-way-37583313', .2], ['osm-way-37583313', .7],
+    ['osm-way-482107090', .5], ['osm-way-652008638', .5],
+    ['osm-way-482107093', .5],
+  ]) at(id, fraction);
+  const earliest = tracker.approachTime;
+  const latest = tracker.entryTimingAnchorAt;
+  assert.equal(earliest, base + 6000);
+  assert.equal(latest, base + 14000);
+  tracker.invalidate('Tunnel GPS unavailable');
+  assert.equal(tracker.gapAnchor.fix.time, latest);
+  assert.equal(tracker.gapAnchor.road.id, 'osm-way-482107093');
+  const first = at('osm-way-638056920', .4, 180000);
+  assert.equal(first.deltaSeconds, null);
+  const recovered = at('osm-way-638056920', .5);
+  assert.equal(recovered.reconstructionStatus, 'reconstructed');
+  assert.equal(recovered.approachTime, earliest);
+  assert.equal(recovered.entryTime, latest);
+  assert.equal(recovered.entryTimingSource, 'latest-reliable-ramp-fix');
+  assert.equal(recovered.timingBasis, 'since entrance approach');
+  const anchorRoad = tracker.routeById.get('osm-way-482107093');
+  const mainline = byId.get('osm-way-638056920');
+  const route = tracker.recoveryRoute(anchorRoad, mainline,
+    roadLengthM(anchorRoad) * .5, roadLengthM(mainline) * .5, 15000);
+  assert.ok(route.reference > 0, 'remaining ramp contributes to timing reference');
+  assert.ok(Math.abs(recovered.deltaSeconds - (182 - route.reference)) < 8);
 });
 
 test('unresolved fork candidate can later recover on a unique true road', () => {

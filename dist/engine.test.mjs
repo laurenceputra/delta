@@ -662,6 +662,71 @@ test('mapped joining ramp estimates entry before first mainline fix', () => {
   assert.equal(tracker.state.entryTime, joined.expresswayEntryTime);
 });
 
+test('mapped entry fix outranks a bracket while downstream first fix retains latest ramp anchor', () => {
+  const local = { id: 'approach', highway: 'residential',
+    coordinates: [[103.899, 1.349], [103.9, 1.349]] };
+  const ramp = { id: 'join', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9, 1.349], [103.901, 1.35]] };
+  const main = { ...road, id: 'main', ref: 'CTE',
+    coordinates: [[103.901, 1.35], [103.911, 1.35]] };
+  const data = { roads: [main], localRoads: [local, ramp], rampGraph: {
+    links: [{ id: 'join' }], paths: [{ kind: 'joining', fromRoadId: 'approach',
+      toRoadId: 'main', linkIds: ['join'], endCoordinate: ramp.coordinates[1] }] } };
+  const prepare = () => {
+    const tracker = new Tracker(data);
+    tracker.update(at(local, 50, 0));
+    tracker.update(at(local, 60, 1000));
+    tracker.update(at(ramp, 30, 2000));
+    tracker.update(at(ramp, roadLengthM(ramp) - 20, 8000));
+    return tracker;
+  };
+  const atBoundary = prepare();
+  const direct = atBoundary.update(at(main, 4, 9000));
+  assert.equal(direct.entrySource, 'mapped-entry-fix');
+  assert.equal(direct.entryTimingSource, 'mapped-entry-fix');
+  assert.equal(direct.entryTime, epoch + 9000);
+  const locked = atBoundary.update(at(main, 30, 11000));
+  assert.equal(locked.entryTime, direct.entryTime);
+  const bracketed = prepare().update(at(main, 40, 9000));
+  assert.equal(bracketed.entrySource, 'mapped-ramp-boundary-estimate');
+  assert.ok(bracketed.entryTime > epoch + 8000 && bracketed.entryTime < epoch + 9000);
+  const downstream = prepare();
+  const first = downstream.update(at(main, 100, 15000));
+  assert.equal(first.entryTimingSource, 'latest-reliable-ramp-fix');
+  assert.equal(first.entryTime, epoch + 8000);
+  assert.equal(first.approachTime, epoch + 2000);
+  const confirmed = downstream.update(at(main, 120, 17000));
+  assert.equal(confirmed.entryTime, epoch + 8000);
+});
+
+test('mapped entry fix after a ramp GPS gap outranks an earlier connector anchor', () => {
+  const local = { id: 'street', highway: 'residential',
+    coordinates: [[103.899, 1.349], [103.9, 1.349]] };
+  const first = { id: 'first-link', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9, 1.349], [103.9005, 1.3495]] };
+  const last = { id: 'last-link', highway: 'motorway_link', oneway: true,
+    coordinates: [[103.9005, 1.3495], [103.901, 1.35]] };
+  const main = { ...road, id: 'cte', ref: 'CTE',
+    coordinates: [[103.901, 1.35], [103.911, 1.35]] };
+  const tracker = new Tracker({ roads: [main], localRoads: [local, first, last],
+    rampGraph: { links: [{ id: first.id }, { id: last.id }], paths: [
+      { kind: 'joining', fromRoadId: local.id, toRoadId: main.id,
+        linkIds: [first.id, last.id], endCoordinate: last.coordinates[1] },
+    ] } });
+  tracker.update(at(local, 50, 0));
+  tracker.update(at(local, 70, 1000));
+  const approach = tracker.update(at(first, 30, 2000));
+  assert.equal(approach.approachTime, epoch + 2000);
+  tracker.invalidate('Tunnel GPS unavailable');
+  const entered = tracker.update(at(main, 4, 40000));
+  assert.equal(entered.entrySource, 'mapped-entry-fix');
+  assert.equal(entered.entryTime, epoch + 40000);
+  assert.equal(entered.approachTime, epoch + 2000);
+  assert.equal(tracker.gapAnchor, null);
+  const next = tracker.update(at(main, 40, 42000));
+  assert.equal(next.entryTime, entered.entryTime);
+});
+
 test('ambiguous ramp outcomes remain unknown and do not force an exit', () => {
   const main = { ...road, id: 'main' };
   const ramp = { id: 'ramp', highway: 'motorway_link', oneway: true,

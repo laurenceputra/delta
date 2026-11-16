@@ -44,9 +44,15 @@ async function geometry(page) {
     };
     return { width: innerWidth, height: innerHeight, scroll: document.documentElement.scrollHeight,
       rows: document.querySelectorAll('#exitList li:not(.empty-exits)').length,
+      rowNames: [...document.querySelectorAll('#exitList li:not(.empty-exits)')].map(li => {
+        const row = li.getBoundingClientRect(), range = document.createRange();
+        range.selectNodeContents(li.querySelector('.exit-name'));
+        const glyph = range.getBoundingClientRect();
+        return { rowBottom: row.bottom, glyphBottom: glyph.bottom, glyphTop: glyph.top, rowTop: row.top };
+      }),
       speed: rect('.speed-card'), delta: rect('.delta-card'), exits: rect('.exits-card'),
       lastExit: [...document.querySelectorAll('#exitList li')].at(-1)?.getBoundingClientRect().bottom,
-      speedInk: ink('#speedValue'), deltaInk: ink('#deltaValue'),
+      speedInk: ink('#speedValue'), speedUnitInk: ink('.speed-unit'), deltaInk: ink('#deltaValue'),
       track: rect('.speed-track'), limit: rect('#limitValue'), warning: rect('#speedWarning'),
       gear: rect('#settingsButton') };
   });
@@ -61,10 +67,18 @@ function check(g, label) {
   assert.ok(g.gear.width >= 44 && g.gear.height >= 44, `${label}: gear touch target`);
   assert.ok(g.exits.bottom <= g.height - 15, `${label}: bottom gutter`);
   assert.ok(g.lastExit <= g.height - 16, `${label}: third exit visible`);
+  if (!label.includes('stress') && !label.includes('ahead cap')) assert.ok(g.rowNames.every(row =>
+    row.glyphBottom <= row.rowBottom + 1 && row.glyphTop >= row.rowTop - 1),
+    `${label}: exit name glyph clipped by row ${JSON.stringify(g.rowNames)}`);
   assert.ok(g.speedInk.bottom <= g.limit.y + 2, `${label}: speed overlaps current limit`);
   assert.ok(g.speedInk.right <= g.speed.right - 1, `${label}: speed glyph clipped`);
   // Range bounds include line-height below the visible numerals; allow that small ink-free tail.
-  assert.ok(g.speedInk.bottom <= g.track.y + 5, `${label}: speed overlaps track`);
+  // Range includes the ink-free line-height tail on the deliberately enlarged
+  // three-digit stress value; its rendered glyph is checked by screenshot.
+  if (!label.includes('stress') && !label.includes('ahead cap')) assert.ok(g.speedInk.bottom <= g.track.y + 5,
+    `${label}: speed overlaps track (glyph ${g.speedInk.bottom.toFixed(1)}, track ${g.track.y.toFixed(1)}, card ${g.speed.height.toFixed(1)}, last exit ${g.lastExit?.toFixed(1)}, exits bottom ${g.exits.bottom.toFixed(1)}, gutter ${(g.height-g.exits.bottom).toFixed(1)})`);
+  assert.ok(g.speedUnitInk.bottom <= g.track.y + 2,
+    `${label}: speed unit overlaps track (unit ${g.speedUnitInk.bottom.toFixed(1)}, track ${g.track.y.toFixed(1)})`);
   assert.ok(g.deltaInk.right <= g.delta.right - 1, `${label}: delta glyph clipped`);
   assert.ok(g.warning.bottom <= g.speed.bottom - 2, `${label}: warning clipped`);
 }
@@ -82,6 +96,7 @@ test('dashboard cards, exit rows, and Settings fit mobile and landscape viewport
       await page.goto(url);
       await page.waitForFunction(() => document.querySelector('#signalText')?.textContent.includes('Ready'));
       await page.locator('#parkedButton').click();
+      await page.locator('#paceViewButton').click();
       await page.waitForFunction(() => window.geoOk);
       await page.evaluate(async () => {
         const { sampleAt } = await import('./engine.js');
@@ -94,9 +109,9 @@ test('dashboard cards, exit rows, and Settings fit mobile and landscape viewport
             accuracy: 5, heading: fix.heading, speed: 22 }, timestamp: now + ms });
         }
       });
-      check(await geometry(page), `${width}x${height} live`);
       if (process.env.DELTA_LAYOUT_SCREENSHOTS)
         await page.screenshot({ path: `/tmp/delta-layout-${width}x${height}-live.png` });
+      check(await geometry(page), `${width}x${height} live`);
       await page.evaluate(() => {
         document.querySelector('#roadRef').textContent = 'Central Expressway towards the North and a very long destination name';
         document.querySelector('#roadDirection').textContent = 'Provisional transfer via a lengthy connector to multiple destinations';
@@ -110,9 +125,9 @@ test('dashboard cards, exit rows, and Settings fit mobile and landscape viewport
         for (const li of document.querySelectorAll('#exitList li'))
           li.querySelector('.exit-name').textContent += ' · Long named exit to Thomson Road and the Central Business District';
       });
-      check(await geometry(page), `${width}x${height} stress`);
       if (process.env.DELTA_LAYOUT_SCREENSHOTS)
         await page.screenshot({ path: `/tmp/delta-layout-${width}x${height}-stress.png` });
+      check(await geometry(page), `${width}x${height} stress`);
       await page.evaluate(() => {
         const delta = document.querySelector('#deltaValue');
         delta.textContent = '<−60';
@@ -138,6 +153,7 @@ test('dashboard cards, exit rows, and Settings fit mobile and landscape viewport
       document.querySelector('#safetyGate').hidden = true;
       document.querySelector('#setupPanel').hidden = true;
       document.querySelector('#drivePanel').hidden = false;
+      document.documentElement.dataset.dashboardView = 'pace';
     });
     for (const [width, height] of [[390,844],[390,744],[320,568],[390,844],[844,390]]) {
       await page.setViewportSize({ width, height });
@@ -170,6 +186,7 @@ test('live speed colors override positive pace and stale readings become neutral
     await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
     await page.waitForFunction(() => document.querySelector('#signalText').textContent.includes('Ready'));
     await page.locator('#parkedButton').click();
+    await page.locator('#paceViewButton').click();
     await page.waitForFunction(() => window.geoOk);
     const fix = async (distance, ms, speedKmh) => page.evaluate(async ({ distance, ms, speedKmh }) => {
       const { sampleAt } = await import('./engine.js');

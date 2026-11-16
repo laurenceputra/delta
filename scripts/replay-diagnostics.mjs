@@ -67,6 +67,8 @@ function stateSummary(state) {
     visualRoadId: state.visualRoad?.id ?? null, gpsStatus: state.gpsStatus,
     roadMatchStatus: state.roadMatchStatus, timingStatus: state.timingStatus,
     sessionId: state.sessionId, entryTime: state.entryTime,
+    approachTime: state.approachTime ?? null, latestApproachFixAt: state.latestApproachFixAt ?? null,
+    entryTimingAnchorAt: state.entryTimingAnchorAt ?? null, entryTimingSource: state.entryTimingSource ?? null,
     deltaSeconds: state.deltaSeconds ?? null, reconstructionStatus: state.reconstructionStatus,
     timingBasis: state.timingBasis ?? null, recoveryReason: state.recovery?.reasonCode ?? null,
     recoveryPhase: state.recovery?.phase ?? null, recoveryReliableMs: state.recovery?.reliableMs ?? 0,

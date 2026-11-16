@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Delta \u2014 Singapore Expressways",
-  "short_name": "Delta SG",
-  "description": "Singapore road names and GPS speed, with expressway-only reference timing. Journey data stays on your phone.",
+  "name": "Delta \u2014 Singapore Driving Companion",
+  "short_name": "Delta",
+  "description": "Know your speed. See what is ahead. A foreground Singapore driving companion with mapped limit references, upcoming expressway exits and optional pace tracking.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
