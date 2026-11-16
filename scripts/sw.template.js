@@ -8,11 +8,23 @@ self.addEventListener('install', event => {
 });
 
 self.addEventListener('message', event => {
-  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+  if (event.data?.type !== 'SKIP_WAITING') return;
+  event.waitUntil((async () => {
+    // An older or suspended second window may contain a live journey. Never
+    // activate over it, even if the requesting window is at its parked gate.
+    const windows = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+      .filter(client => client.url.startsWith(self.registration.scope));
+    if (!event.source?.id || windows.some(client => client.id !== event.source.id)) {
+      event.ports[0]?.postMessage({ type: 'UPDATE_BLOCKED' });
+      return;
+    }
+    event.ports[0]?.postMessage({ type: 'UPDATE_ACTIVATING' });
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', event => {
-  // Activation follows an explicit parked update, or all old tabs closing.
+  // Activation follows a fresh-launch gate, an explicit parked update, or all old tabs closing.
   // Keep one asset generation rather than accumulating road-data copies.
   event.waitUntil((async () => {
     const keys = await caches.keys();

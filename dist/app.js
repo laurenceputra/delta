@@ -164,14 +164,14 @@ function render(state, fix) {
 function onFix(position){ if(mode!=='live')return; const c=position.coords;const fix={latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy,heading:c.heading,speed:c.speed,timestamp:position.timestamp};try{recordDiagnostic('fix',{fix,phase:'raw-callback'});const state=tracker.update(fix);if(state?.acceptedFix)lastFixTime=Date.now();recordDiagnostic('state',{fix,match:tracker?.diagnosticSnapshot?.()??null,state:{status:state.status,reason:state.reason,gpsStatus:state.gpsStatus,roadMatchStatus:state.roadMatchStatus,timingStatus:state.timingStatus,road:state.road,visualRoad:state.visualRoad,candidateRoad:state.candidateRoad,routeContext:state.routeContext,entryTime:state.entryTime,approachTime:state.approachTime,expresswayEntryTime:state.expresswayEntryTime,entryTimingAnchorAt:state.entryTimingAnchorAt,entryTimingSource:state.entryTimingSource,latestApproachFixAt:state.latestApproachFixAt,timingBasis:state.timingBasis,deltaSeconds:state.deltaSeconds,recovery:state.recovery,reconstructionStatus:state.reconstructionStatus,incompleteJourney:state.incompleteJourney,visualSpeedKmh:state.visualSpeedKmh,visualLimitKmh:state.visualLimitKmh,previousDelta:state.previousDelta,localEvidenceMs:tracker?.localEvidenceMs??null}});render(state,fix);}catch(err){recordDiagnostic('error',{message:String(err)});setSignal('Road data unavailable','warn');console.error(err);} }
 function invalidateLocation(message){const state=tracker?.invalidate(message,true);recordDiagnostic('signal',{message,state:state?{status:state.status,road:state.road,routeContext:state.routeContext,gpsStatus:state.gpsStatus,timingStatus:state.timingStatus,recovery:state.recovery,reconstructionStatus:state.reconstructionStatus}:null});if(state)render(state,null);else resetDashboard();ui.speedStatus.textContent='NO SIGNAL';const status=state?statusCopy(state,state.visualRoad||state.road||state.routeContext):null;setSignal(status?.main||message,'warn',dashboardView==='everyday'?status?.contextText||'No road context':status?.support||'No road context');}
 function onLocationError(err){ if(mode!=='live')return;recordDiagnostic('error',{code:err.code,message:err.message||null});const text=err.code===1?'Location permission denied':err.code===2?'Location temporarily unavailable':'Location timed out';invalidateLocation(text); }
-function startLive(){if(!parkedConfirmed)return;closeInfoIfOpen();clearSession();resetDashboard();setMode('live');setSignal('Requesting precise location…','warn');if(!roadsData||!tracker){setSignal('Road data unavailable · reload to retry','warn');return;}if(!navigator.geolocation){setSignal('Location unavailable in this browser','warn');return;}watchId=navigator.geolocation.watchPosition(onFix,onLocationError,{enableHighAccuracy:true,maximumAge:0,timeout:12000});staleTimer=setInterval(()=>{if(mode!=='live')return;const before=tracker?.state?.previousDelta;const state=tracker?.tick(Date.now());if(before!==state?.previousDelta)render(state,lastRenderedFix);if(lastKnownEntryTime)ui.elapsedValue.textContent=fmtTime((Date.now()-lastKnownEntryTime)/1000);refreshHeldAge(state);if(lastFixTime&&Date.now()-lastFixTime>STALE_MS){lastFixTime=0;invalidateLocation('Location stale · waiting for signal');ui.speedStatus.textContent='STALE';}},1000);requestWake();}
+function startLive(){if(!parkedConfirmed||startupUpdatePending||updateActivationPending)return;sessionStarted=true;closeInfoIfOpen();clearSession();resetDashboard();setMode('live');setSignal('Requesting precise location…','warn');if(!roadsData||!tracker){setSignal('Road data unavailable · reload to retry','warn');return;}if(!navigator.geolocation){setSignal('Location unavailable in this browser','warn');return;}watchId=navigator.geolocation.watchPosition(onFix,onLocationError,{enableHighAccuracy:true,maximumAge:0,timeout:12000});staleTimer=setInterval(()=>{if(mode!=='live')return;const before=tracker?.state?.previousDelta;const state=tracker?.tick(Date.now());if(before!==state?.previousDelta)render(state,lastRenderedFix);if(lastKnownEntryTime)ui.elapsedValue.textContent=fmtTime((Date.now()-lastKnownEntryTime)/1000);refreshHeldAge(state);if(lastFixTime&&Date.now()-lastFixTime>STALE_MS){lastFixTime=0;invalidateLocation('Location stale · waiting for signal');ui.speedStatus.textContent='STALE';}},1000);requestWake();}
 function roadKey(road){return road.id||`${road.ref}|${road.direction}|${road.name}`;}
 function buildDemoChains(ref){const byId=new Map(roadList().map(r=>[r.id,r]));return (roadsData.chains||[]).filter(c=>c.ref===ref).sort((a,b)=>b.lengthM-a.lengthM).slice(0,2).map(meta=>{const chain=[],seen=new Set();let road=byId.get(meta.firstRoadId);while(road&&!seen.has(road.id)&&road.chainId===meta.id){chain.push(road);seen.add(road.id);road=byId.get(road.nextRoadIds?.[0]);}chain.demoDirection=meta.travelDirection;return chain;});}
 function populateDemo(){const refs=[...new Set(roadList().map(r=>r.ref).filter(Boolean))].sort();ui.demoRoad.replaceChildren(...refs.map(ref=>new Option(ref,ref)));if(refs.includes('BKE'))ui.demoRoad.value='BKE';updateDemoDirections();}
 function updateDemoDirections(){const chains=buildDemoChains(ui.demoRoad.value);ui.demoDirection.replaceChildren(...chains.map((chain,i)=>new Option(`${{N:'Northbound',S:'Southbound',E:'Eastbound',W:'Westbound'}[chain.demoDirection]||'Direction'} · ${Math.round(chain.reduce((n,r)=>n+roadLengthM(r),0)/1000)} km`,String(i))));ui.demoDirection._chains=chains;selectDemoRoad();}
 function selectDemoRoad(){demoChain=ui.demoDirection._chains?.[Number(ui.demoDirection.value)]||[];demoRoad=demoChain[0]||null;demoDistance=0;demoClock=Date.now();tracker?.reset();lastDelta=null;tickDemo(0);}
 function tickDemo(seconds=1){if(mode!=='demo'||!demoRoad||demoPaused)return;const speed=Number(ui.demoSpeed.value);ui.demoSpeedOutput.value=`${speed} km/h`;const length=demoChain.reduce((n,r)=>n+roadLengthM(r),0);if(Number.isFinite(length)&&length>0)demoDistance=(demoDistance+speed/3.6*seconds)%length;let remaining=demoDistance,segment=demoChain[0];for(const road of demoChain){const n=roadLengthM(road);if(remaining<=n){segment=road;break;}remaining-=n;}const point=sampleAt(segment,remaining);if(!point)return;if(seconds>0)demoClock+=seconds*1000;const fix={...point,accuracy:5,speed:speed/3.6,timestamp:demoClock};try{render(tracker.update(fix),fix);}catch(err){setSignal('Demo road unavailable','warn');console.error(err);}}
-function startDemo(){if(!parkedConfirmed)return;closeInfoIfOpen();clearSession();resetDashboard();setMode('demo');if(!roadsData||!tracker){setSignal('Road data unavailable · reload to retry','warn');return;}populateDemo();demoTimer=setInterval(()=>tickDemo(1),1000);}
+function startDemo(){if(!parkedConfirmed||startupUpdatePending||updateActivationPending)return;sessionStarted=true;closeInfoIfOpen();clearSession();resetDashboard();setMode('demo');if(!roadsData||!tracker){setSignal('Road data unavailable · reload to retry','warn');return;}populateDemo();demoTimer=setInterval(()=>tickDemo(1),1000);}
 function showReady(){closeInfoIfOpen();clearSession();setMode('ready');setSignal('Choose a mode to begin');resetDashboard();}
 async function requestWake(){if(!('wakeLock'in navigator)||document.visibilityState!=='visible'||mode==='ready')return;try{wakeLock=await navigator.wakeLock.request('screen');ui.wakeButton.setAttribute('aria-pressed','true');ui.wakeButton.textContent='Screen awake: on';wakeLock.addEventListener('release',()=>{wakeLock=null;ui.wakeButton.setAttribute('aria-pressed','false');ui.wakeButton.textContent='Screen awake: off';});}catch{ui.wakeButton.setAttribute('aria-pressed','false');ui.wakeButton.textContent='Screen awake unavailable';}}
 async function toggleWake(){if(wakeLock){await wakeLock.release();wakeLock=null;}else await requestWake();}
@@ -179,34 +179,75 @@ function openInfo(){lastFocus=document.activeElement;ui.drawerBackdrop.hidden=fa
 function closeInfoIfOpen(){if(!ui.infoDrawer.hidden)closeInfo();}
 function closeInfo(){ui.drawerBackdrop.hidden=true;ui.infoDrawer.hidden=true;ui.settingsButton.setAttribute('aria-expanded','false');lastFocus?.focus();}
 function syncVisibleHeight(){const height=window.visualViewport?.height||window.innerHeight;document.documentElement.style.setProperty('--visible-height',`${Math.round(height)}px`);}
-function initEvents(){initTheme();initDashboardView();syncVisibleHeight();window.visualViewport?.addEventListener('resize',syncVisibleHeight);window.addEventListener('resize',syncVisibleHeight);ui.parkedButton.addEventListener('click',()=>{parkedConfirmed=true;ui.safetyGate.hidden=true;if(dataReady)startLive();else setSignal('Loading Singapore road names…','warn');});if(!('wakeLock'in navigator)){ui.wakeButton.disabled=true;ui.wakeButton.textContent='Screen awake unavailable';}ui.liveButton.addEventListener('click',startLive);ui.demoButton.addEventListener('click',startDemo);ui.changeModeButton.addEventListener('click',showReady);ui.demoRoad.addEventListener('change',updateDemoDirections);ui.demoDirection.addEventListener('change',selectDemoRoad);ui.demoSpeed.addEventListener('input',()=>{ui.demoSpeedOutput.value=`${ui.demoSpeed.value} km/h`;});ui.demoPlayButton.addEventListener('click',()=>{demoPaused=!demoPaused;ui.demoPlayButton.textContent=demoPaused?'Resume demo':'Pause demo';setSignal(demoPaused?'DEMO · paused':'DEMO · simulated location',demoPaused?'warn':'good');});ui.wakeButton.addEventListener('click',toggleWake);ui.recordDiagnosticsButton.addEventListener('click',()=>diagnosticAction(async()=>{if(!parkedConfirmed)throw new Error('Confirm you are parked before recording.');if(!diagnostics)throw new Error('Local diagnostics unavailable.');if(diagnostics.active)await diagnostics.stop();else {if(mode!=='live')throw new Error('Start a live drive before recording diagnostics.');await diagnostics.start();recordDiagnostic('session',{action:'recording-start',sessionActive:!!tracker?.state?.entryTime,state:{entryTime:tracker?.state?.entryTime??null,approachTime:tracker?.state?.approachTime??null,sessionId:tracker?.state?.sessionId??null,road:tracker?.state?.road??null}});}}));ui.exportDiagnosticsButton.addEventListener('click',()=>diagnosticAction(()=>diagnostics.export(selectedDiagnostic(),ui.issueInput.value.trim())));ui.deleteDiagnosticsButton.addEventListener('click',()=>diagnosticAction(()=>diagnostics.delete(selectedDiagnostic())));ui.clearDiagnosticsButton.addEventListener('click',()=>diagnosticAction(()=>diagnostics.clear()));ui.uploadDiagnosticsButton.addEventListener('click',uploadSelected);ui.settingsButton.addEventListener('click',openInfo);ui.closeInfoButton.addEventListener('click',closeInfo);ui.drawerBackdrop.addEventListener('click',closeInfo);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!ui.infoDrawer.hidden)closeInfo();if(e.key==='Tab'&&!ui.infoDrawer.hidden){const focusable=[...ui.infoDrawer.querySelectorAll('button,a,[tabindex]:not([tabindex="-1"])')];if(e.shiftKey&&document.activeElement===focusable[0]){e.preventDefault();focusable.at(-1)?.focus();}else if(!e.shiftKey&&document.activeElement===focusable.at(-1)){e.preventDefault();focusable[0]?.focus();}}});document.addEventListener('visibilitychange',()=>{recordDiagnostic('visibility',{visibilityState:document.visibilityState});if(document.visibilityState==='hidden')diagnostics?.checkpoint();if(document.visibilityState==='visible'&&mode!=='ready'&&!wakeLock)requestWake();});window.addEventListener('pagehide',()=>{recordDiagnostic('session',{action:'pagehide'});void diagnostics?.stop(true);clearSession();wakeLock?.release();});window.addEventListener('online',updateNetwork);window.addEventListener('offline',updateNetwork);}
+function initEvents(){initTheme();initDashboardView();syncVisibleHeight();window.visualViewport?.addEventListener('resize',syncVisibleHeight);window.addEventListener('resize',syncVisibleHeight);ui.parkedButton.addEventListener('click',()=>{if(startupUpdatePending||updateActivationPending)return;parkedConfirmed=true;ui.safetyGate.hidden=true;if(dataReady)startLive();else setSignal('Loading Singapore road names…','warn');});if(!('wakeLock'in navigator)){ui.wakeButton.disabled=true;ui.wakeButton.textContent='Screen awake unavailable';}ui.liveButton.addEventListener('click',startLive);ui.demoButton.addEventListener('click',startDemo);ui.changeModeButton.addEventListener('click',showReady);ui.demoRoad.addEventListener('change',updateDemoDirections);ui.demoDirection.addEventListener('change',selectDemoRoad);ui.demoSpeed.addEventListener('input',()=>{ui.demoSpeedOutput.value=`${ui.demoSpeed.value} km/h`;});ui.demoPlayButton.addEventListener('click',()=>{demoPaused=!demoPaused;ui.demoPlayButton.textContent=demoPaused?'Resume demo':'Pause demo';setSignal(demoPaused?'DEMO · paused':'DEMO · simulated location',demoPaused?'warn':'good');});ui.wakeButton.addEventListener('click',toggleWake);ui.recordDiagnosticsButton.addEventListener('click',()=>diagnosticAction(async()=>{if(!parkedConfirmed)throw new Error('Confirm you are parked before recording.');if(!diagnostics)throw new Error('Local diagnostics unavailable.');if(diagnostics.active)await diagnostics.stop();else {if(mode!=='live')throw new Error('Start a live drive before recording diagnostics.');await diagnostics.start();recordDiagnostic('session',{action:'recording-start',sessionActive:!!tracker?.state?.entryTime,state:{entryTime:tracker?.state?.entryTime??null,approachTime:tracker?.state?.approachTime??null,sessionId:tracker?.state?.sessionId??null,road:tracker?.state?.road??null}});}}));ui.exportDiagnosticsButton.addEventListener('click',()=>diagnosticAction(()=>diagnostics.export(selectedDiagnostic(),ui.issueInput.value.trim())));ui.deleteDiagnosticsButton.addEventListener('click',()=>diagnosticAction(()=>diagnostics.delete(selectedDiagnostic())));ui.clearDiagnosticsButton.addEventListener('click',()=>diagnosticAction(()=>diagnostics.clear()));ui.uploadDiagnosticsButton.addEventListener('click',uploadSelected);ui.settingsButton.addEventListener('click',openInfo);ui.closeInfoButton.addEventListener('click',closeInfo);ui.drawerBackdrop.addEventListener('click',closeInfo);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!ui.infoDrawer.hidden)closeInfo();if(e.key==='Tab'&&!ui.infoDrawer.hidden){const focusable=[...ui.infoDrawer.querySelectorAll('button,a,[tabindex]:not([tabindex="-1"])')];if(e.shiftKey&&document.activeElement===focusable[0]){e.preventDefault();focusable.at(-1)?.focus();}else if(!e.shiftKey&&document.activeElement===focusable.at(-1)){e.preventDefault();focusable[0]?.focus();}}});document.addEventListener('visibilitychange',()=>{recordDiagnostic('visibility',{visibilityState:document.visibilityState});if(document.visibilityState==='hidden')diagnostics?.checkpoint();if(document.visibilityState==='visible'&&mode!=='ready'&&!wakeLock)requestWake();});window.addEventListener('pagehide',()=>{recordDiagnostic('session',{action:'pagehide'});void diagnostics?.stop(true);clearSession();wakeLock?.release();});window.addEventListener('online',updateNetwork);window.addEventListener('offline',updateNetwork);}
 function updateNetwork(){ui.networkText.textContent=navigator.onLine?'LOCAL SESSION':'OFFLINE · LOCAL SESSION';}
 function updateClock(){ui.clock.textContent=new Date().toLocaleTimeString('en-SG',{hour:'2-digit',minute:'2-digit',hour12:false});}
-let updateRequested=false, updateRegistration=null, lastUpdateCheck=0, updateReloaded=false;
+let updateRequested=false, updateRegistration=null, lastUpdateCheck=0, updateReloaded=false, controllerUpdateReady=false;
+let sessionStarted=false, startupUpdatePending=false, updateActivationPending=false, startupAutoAttempted=false;
+function refreshStartupGate(){ui.parkedButton.disabled=startupUpdatePending||updateActivationPending;ui.parkedButton.textContent=updateActivationPending?'Applying downloaded update…':startupUpdatePending?'Checking for updates…':'I’m parked — continue';}
+function canAutoUpdate(){return !sessionStarted&&!parkedConfirmed&&!ui.safetyGate.hidden&&document.visibilityState==='visible';}
 function showWaitingUpdate(registration){
   if(!navigator.serviceWorker.controller||!registration.waiting)return;
   updateRegistration=registration;
   ui.updateNotice.hidden=false;
   ui.settingsButton.setAttribute('aria-label','Settings and information · update ready');
   ui.settingsButton.classList.add('has-update');
+  if(canAutoUpdate()&&!updateActivationPending&&!startupAutoAttempted){startupAutoAttempted=true;void activateAppUpdate(true);}
 }
 async function checkForAppUpdate(force=false){
-  if(!updateRegistration||!navigator.onLine)return;
+  if(!updateRegistration)return;
+  showWaitingUpdate(updateRegistration);
+  if(!navigator.onLine)return;
   const now=Date.now();if(!force&&now-lastUpdateCheck<15*60*1000)return;
   lastUpdateCheck=now;
-  try{await updateRegistration.update();showWaitingUpdate(updateRegistration);}catch{} // Stay on the installed version offline.
+  try{await updateRegistration.update();showWaitingUpdate(updateRegistration);}catch{} // Keep the installed version offline.
 }
-function reloadAfterApprovedUpdate(){if(updateRequested&&!updateReloaded){updateReloaded=true;location.reload();}}
+function reloadAfterApprovedUpdate(){
+  if(updateRequested&&!updateReloaded){updateReloaded=true;location.reload();}
+  else if(!updateRequested){
+    controllerUpdateReady=true;ui.updateNotice.hidden=false;
+    ui.updateNotice.querySelector('p').textContent='Update installed. It applies on your next launch, or reload below while parked.';
+    ui.updateButton.textContent='I’m parked — reload';
+  }
+}
+async function activateAppUpdate(automatic=false){
+  const waiting=updateRegistration?.waiting;
+  if(!waiting){if(!automatic&&controllerUpdateReady){updateRequested=true;reloadAfterApprovedUpdate();}return;}
+  if(updateActivationPending||automatic&&!canAutoUpdate())return;
+  updateActivationPending=true;updateRequested=true;refreshStartupGate();
+  ui.updateButton.disabled=true;ui.updateButton.textContent='Updating…';
+  let channel, timer, onStateChange;
+  try{
+    await new Promise((resolve,reject)=>{
+      channel=new MessageChannel();
+      timer=setTimeout(()=>reject(new Error('Update is still pending. Try again while parked.')),8000);
+      channel.port1.onmessage=event=>{
+        if(event.data?.type==='UPDATE_BLOCKED')reject(new Error('Close other Delta windows, then update while parked.'));
+      };
+      onStateChange=()=>{
+        if(waiting.state==='activated'){reloadAfterApprovedUpdate();resolve();}
+        if(waiting.state==='redundant')reject(new Error('Update unavailable. Try again while parked.'));
+      };
+      waiting.addEventListener('statechange',onStateChange);
+      waiting.postMessage({type:'SKIP_WAITING'},[channel.port2]);
+    });
+  }catch(error){
+    updateRequested=false;
+    ui.updateButton.textContent='I’m parked — update';
+    ui.updateNotice.querySelector('p').textContent=error.message;
+  }finally{
+    clearTimeout(timer);channel?.port1.close();
+    if(onStateChange)waiting.removeEventListener('statechange',onStateChange);
+    updateActivationPending=false;ui.updateButton.disabled=false;refreshStartupGate();
+  }
+}
 function setupServiceWorker(){
   if(!('serviceWorker'in navigator))return;
+  startupUpdatePending=true;refreshStartupGate();
+  // Do not hold a parked driver indefinitely when registration/network is unavailable.
+  const startupDeadline=setTimeout(()=>{startupUpdatePending=false;refreshStartupGate();},2500);
   navigator.serviceWorker.addEventListener('controllerchange',reloadAfterApprovedUpdate);
-  ui.updateButton.addEventListener('click',()=>{
-    const waiting=updateRegistration?.waiting;
-    if(!waiting)return;
-    updateRequested=true;ui.updateButton.disabled=true;ui.updateButton.textContent='Updating…';
-    waiting.addEventListener('statechange',()=>{if(waiting.state==='activated')reloadAfterApprovedUpdate();});
-    waiting.postMessage({type:'SKIP_WAITING'});
-  });
+  ui.updateButton.addEventListener('click',()=>void activateAppUpdate(false));
   navigator.serviceWorker.register('./sw.js').then(registration=>{
     updateRegistration=registration;
     showWaitingUpdate(registration);
@@ -216,10 +257,14 @@ function setupServiceWorker(){
         if(installing.state==='installed')showWaitingUpdate(registration);
       });
     });
-    checkForAppUpdate(true);
-  }).catch(()=>{});
+    void checkForAppUpdate(true);
+  }).catch(()=>{}).finally(()=>{
+    clearTimeout(startupDeadline);startupUpdatePending=false;refreshStartupGate();
+  });
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')checkForAppUpdate();});
   window.addEventListener('online',()=>checkForAppUpdate(true));
+  setInterval(()=>{if(document.visibilityState==='visible')void checkForAppUpdate();},15*60*1000);
 }
+
 async function init(){initEvents();void initDiagnostics();ui.appVersion.textContent=`v${APP_VERSION} · build ${BUILD_ID}`;setupServiceWorker();updateClock();setInterval(updateClock,15000);updateNetwork();try{setSignal('Loading Singapore road names…','warn');const response=await fetch('./data/roads.json');if(!response.ok)throw new Error(`Road data ${response.status}`);roadsData=await response.json();let localData={roads:[]};try{if('DecompressionStream'in window){const compressed=await fetch('./data/local-roads.json.gz');if(!compressed.ok)throw new Error('Compressed road data unavailable');localData=await new Response(compressed.body.pipeThrough(new DecompressionStream('gzip'))).json();}else{const plain=await fetch('./data/local-roads.json');if(!plain.ok)throw new Error('Local road data unavailable');localData=await plain.json();}}catch(error){const plain=await fetch('./data/local-roads.json');if(!plain.ok)throw new Error('Local road data unavailable');localData=await plain.json();}combinedData={...roadsData,localRoads:localData.roads||[]};tracker=new Tracker(combinedData);const meta=roadsData.metadata||{};ui.coverageText.textContent=`Coverage includes ${new Set(roadList().map(r=>r.ref)).size} expressway references and ${(localData.roads||[]).length.toLocaleString()} additional road and ramp segments. Road names and speed are available beyond expressways; delta activates only on confirmed mainlines. Speed limits and exit locations may be missing or outdated. Missing or implausible speed tags use a clearly marked assumed 50 km/h reference. Pace delta starts only after confirmed mainline tracking.`;ui.sourceText.textContent=`Road data: ${meta.sourceAttribution||'© OpenStreetMap contributors'} · ${meta.license||'ODbL-1.0'}. ${meta.note||'Map data may be incomplete.'}`;dataReady=true;if(parkedConfirmed)startLive();else setSignal('Ready · confirm while parked to continue');}catch(err){console.error(err);setSignal('Road data unavailable','warn');}}
 init();
