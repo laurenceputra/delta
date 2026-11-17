@@ -9,7 +9,7 @@ export function motionPauseDetails(reason) {
     'background':['App was in the background. Feedback resumes automatically when the app is visible and sensor readings return.','automatic'],
     'sensor-outlier':['An extreme sensor reading was rejected. Feedback resumes automatically after two clean readings.','automatic'],
     'checking-stability':['Checking stability. Feedback resumes automatically after stable readings.','automatic'],
-    'recording-stopped':['Diagnostics stopped. Feedback is paused. Recalibrate while parked to restart local recording.','restart-recording'],
+    'recording-stopped':['Diagnostics stopped. Feedback is paused. Restart setup while parked to restart local recording.','restart-recording'],
     'recording-limit':['Diagnostics reached a recording or storage limit. Free space if needed, then recalibrate while parked.','restart-recording'],
     'needs-calibration':['Setup required when parked. Restart setup while parked.','recalibrate']
   };

@@ -417,7 +417,7 @@ test('motion stability checks recover automatically but a persistent shifted mou
     await page.locator('#recordDiagnosticsButton').click();
     await page.waitForFunction(() => document.querySelector('#motionBetaIndicator')?.textContent === 'BETA · REC OFF');
     assert.match(await page.locator('#motionStatus').textContent(),
-      /Diagnostics stopped.*Recalibrate while parked/i);
+      /Diagnostics stopped.*Restart setup while parked/i);
     assert.equal(await page.locator('#motionBorder').evaluate(node => node.classList.contains('neutral')), true,
       'recording stop must not leave a false green border');
     const transitions = await page.evaluate(async () => {

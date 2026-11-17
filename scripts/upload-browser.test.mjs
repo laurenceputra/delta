@@ -78,11 +78,13 @@ test('211 local gzip chunks pack into one verified upload and only then delete s
       await new Promise((resolve,reject) => {transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);});
       const originalFetch = window.fetch, calls = { create:0, put:0, finalize:0, status:0 };
       let manifest = null, uploaded = null, completed = false, failFinalize = true;
+      let prepareStartedAt = 0, prepareMs = null;
       window.fetch = async (input, options = {}) => {
         const path = String(input);
         if (!path.startsWith('/api/diagnostics/')) return originalFetch(input, options);
         if (path.endsWith('/auth')) return new Response(null, { status:204 });
         if (path.endsWith('/recordings') && options.method === 'POST') {
+          if (prepareMs === null) prepareMs = performance.now() - prepareStartedAt;
           calls.create++;manifest = JSON.parse(options.body).manifest;
           return Response.json({recordingId:manifest.recordingId,status:'uploading'}, {status:201});
         }
@@ -105,6 +107,7 @@ test('211 local gzip chunks pack into one verified upload and only then delete s
         throw Error(`Unexpected upload path ${path}`);
       };
       let firstError = null;
+      prepareStartedAt = performance.now();
       try { await recorder.upload(id, 'qa-key', 'qa issue'); }
       catch(error) { firstError = error.message; }
       const retainedAfterFailure = (await new Promise((resolve,reject) => {
@@ -121,7 +124,7 @@ test('211 local gzip chunks pack into one verified upload and only then delete s
       const records=await read('recordings'),receipts=await read('receipts');
       const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256',uploaded.data))]
         .map(byte => byte.toString(16).padStart(2,'0')).join('');
-      return { calls, firstError, retainedAfterFailure:!!retainedAfterFailure,
+      return { calls, prepareMs, firstError, retainedAfterFailure:!!retainedAfterFailure,
         sameSession:retainedAfterFailure?.uploadSession?.id===manifest.recordingId,
         chunks:manifest.chunks.length, compressedBytes:manifest.chunks[0].compressedBytes,
         expandedBytes:manifest.chunks[0].expandedBytes, originalId:id,
@@ -130,6 +133,8 @@ test('211 local gzip chunks pack into one verified upload and only then delete s
         remaining:records.length, receipts:receipts.map(receipt => ({id:receipt.id,serverId:receipt.serverId})) };
     }, archive);
     assert.equal(result.chunks, 1, '211 local chunks become one upload group');
+    assert.ok(Number.isFinite(result.prepareMs) && result.prepareMs >= 0);
+    if (process.env.DELTA_PRIVATE_RECORDING) console.log(`Private archive packing: ${Math.round(result.prepareMs)} ms`);
     assert.ok(result.compressedBytes <= 1024*1024 && result.expandedBytes <= 8*1024*1024);
     assert.match(result.firstError, /Upload rejected \(422\)/);
     assert.equal(result.retainedAfterFailure, true, 'failed finalize preserves local source');
