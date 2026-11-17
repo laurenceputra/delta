@@ -1,234 +1,198 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MotionSmoothness } from './motion.js';
-import { motionPauseDetails } from './motion-controller.js';
 
-const fixed = (time, acceleration = [0, 0, 0], extra = {}) => ({
-  time, acceleration, gravity: [0, 0, 9.81], rotation: [0, 0, 0],
-  orientation: [0, 0, 0], speedKmh: 0, gpsFresh: true, ...extra,
-});
-const ready = (gravity = true) => {
+const fixed = (time, extra = {}) => ({ time, acceleration: [0, 0, 0],
+  gravity: [0, 0, 9.81], rotation: [0, 0, 0], orientation: null,
+  speedKmh: 0, gpsFresh: true, ...extra });
+const ready = (extra = {}) => {
   const motion = new MotionSmoothness();
-  assert.equal(motion.calibrate().status, 'calibration');
-  for (let time = 0; time <= 2000; time += 100)
-    motion.update(fixed(time, gravity ? [0, 0, 0] : null));
+  motion.calibrate();
+  for (let time = -1000; time <= 2000; time += 100)
+    motion.update(fixed(time, extra));
   assert.equal(motion.status, 'ready');
   return motion;
 };
 
-test('requires an explicit parked calibration and never manufactures a vehicle forward axis', () => {
+test('rolling warmup works while moving and tolerates isolated spikes', () => {
   const motion = new MotionSmoothness();
   assert.equal(motion.update(fixed(0)).status, 'unavailable');
-  motion.calibrate();
-  for (let time = 0; time < 2000; time += 100)
-    assert.equal(motion.update(fixed(time, [0, 0, 0], { speedKmh: 40 })).status,
-      'calibration');
-  assert.equal(motion.update(fixed(2000, [0, 0, 0], { gpsFresh: false })).status,
-    'calibration');
-  for (let time = 2100; time <= 4100; time += 100) motion.update(fixed(time));
+  assert.equal(motion.calibrate().reason, 'warming-up');
+  for (let time = 0; time <= 3000; time += 100) {
+    const state = motion.update(fixed(time, { speedKmh: 55,
+      acceleration: time === 1200 ? [48, 0, 0] : [0.8, 0, 0],
+      gravity: time === 1200 ? [48, 0, 9.81] : [0.8, 0, 9.81] }));
+    if (time < 3000) assert.equal(state.status, 'calibration');
+  }
   assert.equal(motion.status, 'ready');
+  assert.equal(motion.snapshot().diagnostic.transition.kind, 'warmup-complete');
   assert.equal('forwardAxis' in motion.snapshot(), false);
 });
 
-test('explicit parked setup calibrates without a GPS speed, but fresh movement rejects it', () => {
-  const underground = new MotionSmoothness();
-  underground.calibrate();
-  for (let time = 0; time <= 2000; time += 100)
-    underground.update(fixed(time, [0, 0, 0],
-      { parked: true, gpsFresh: false, speedKmh: null }));
-  assert.equal(underground.status, 'ready');
-  assert.equal(underground.snapshot().confidence, 'low');
-
-  const unknownSpeed = new MotionSmoothness();
-  unknownSpeed.calibrate();
-  for (let time = 0; time <= 2000; time += 100)
-    unknownSpeed.update(fixed(time, [0, 0, 0],
-      { parked: true, gpsFresh: true, speedKmh: null }));
-  assert.equal(unknownSpeed.status, 'ready');
-  assert.equal(unknownSpeed.snapshot().confidence, 'medium');
-  assert.equal(unknownSpeed.update(fixed(2100, [0, 0, 0],
-    { parked: true, gpsFresh: true, speedKmh: null })).confidence, 'medium');
-
-  const moving = new MotionSmoothness();
-  moving.calibrate();
-  for (let time = 0; time <= 2000; time += 100)
-    moving.update(fixed(time, [0, 0, 0],
-      { parked: true, gpsFresh: true, speedKmh: 12 }));
-  assert.equal(moving.status, 'calibration');
+test('warmup needs usable sensor quality and derives gravity without erasing car acceleration', () => {
+  const motion = new MotionSmoothness();
+  motion.calibrate();
+  for (let time = 0; time <= 3200; time += 100)
+    motion.update(fixed(time, { acceleration: null, gravity: null,
+      speedKmh: 45 }));
+  assert.equal(motion.status, 'calibration');
+  for (let time = 3300; time <= 6400; time += 100)
+    motion.update(fixed(time, { acceleration: [1.2, 0, 0],
+      gravity: [1.2, 0, 9.81], speedKmh: 45 }));
+  assert.equal(motion.status, 'ready');
+  assert.ok(Math.abs(motion.gravityBaseline[0]) < 0.01);
+  const state = motion.update(fixed(6500, { acceleration: [1.2, 0, 0],
+    gravity: [1.2, 0, 9.81], speedKmh: 45 }));
+  assert.ok(state.accelerationMagnitude > 0.5);
+  assert.ok(state.diagnostic.gravityAngleDeg < 1);
 });
 
-test('quiet sensor noise stays neutral; sustained vertical bump rises then decays', () => {
+test('stationary unknown GPS speed warms up with low or medium confidence', () => {
+  for (const [gpsFresh, confidence] of [[false, 'low'], [true, 'medium']]) {
+    const motion = new MotionSmoothness();
+    motion.calibrate();
+    for (let time = 0; time <= 3000; time += 100)
+      motion.update(fixed(time, { parked: true, gpsFresh, speedKmh: null }));
+    assert.equal(motion.status, 'ready');
+    assert.equal(motion.snapshot().confidence, confidence);
+  }
+});
+
+test('quiet noise stays neutral and a sustained vertical bump decays', () => {
   const motion = ready();
-  for (let i = 0; i < 20; i++) {
-    const state = motion.update(fixed(2100 + i * 100,
-      [0.03 * (i % 3 - 1), -0.04 * (i % 2), 0.05 * (i % 3 - 1)],
-      { speedKmh: 50 }));
+  for (let time = 2100; time <= 4000; time += 100) {
+    const state = motion.update(fixed(time,
+      { acceleration: [0.03, 0, 0.05] }));
     assert.equal(state.event, null);
     assert.equal(state.severity, 0);
   }
-  const first = motion.update(fixed(4100, [0, 0, 4], { speedKmh: 50 }));
-  assert.equal(first.event, null, 'single spike is not a confirmed event');
-  const bump = motion.update(fixed(4200, [0, 0, 5], { speedKmh: 50 }));
+  assert.equal(motion.update(fixed(4100,
+    { acceleration: [0, 0, 4], speedKmh: 50 })).event, null);
+  const bump = motion.update(fixed(4200,
+    { acceleration: [0, 0, 5], speedKmh: 50 }));
   assert.equal(bump.event?.kind, 'vertical-bump');
   assert.ok(bump.severity > 0.3);
-  assert.ok(bump.filteredAcceleration[2] > 2);
-  assert.ok(bump.jerkMagnitude > 0);
   let decayed;
   for (let time = 4300; time <= 7200; time += 100)
-    decayed = motion.update(fixed(time, [0, 0, 0], { speedKmh: 50 }));
+    decayed = motion.update(fixed(time, { speedKmh: 50 }));
   assert.equal(decayed.event, null);
   assert.ok(decayed.severity < bump.severity / 2);
 });
 
-test('abrupt lateral motion is generic and isolated extreme outliers are ignored', () => {
+test('extreme outlier pauses neutral then two clean samples resume', () => {
   const motion = ready();
-  const outlier = motion.update(fixed(2100, [40, 0, 0], { speedKmh: 50 }));
+  const outlier = motion.update(fixed(2100,
+    { acceleration: [40, 0, 0], speedKmh: 50 }));
   assert.equal(outlier.status, 'paused');
   assert.equal(outlier.reason, 'sensor-outlier');
-  assert.equal(outlier.confidence, 'none');
-  assert.equal(outlier.event, null);
   assert.equal(outlier.severity, 0);
-  assert.equal(motion.update(fixed(2200, [0, 0, 0],
-    { speedKmh: 50 })).status, 'paused');
-  assert.equal(motion.update(fixed(2250, [0, 0, 0],
-    { speedKmh: 50 })).status, 'ready');
-  const first = motion.update(fixed(2300, [4, 0, 0], { speedKmh: 50 }));
-  assert.equal(first.event, null);
-  const second = motion.update(fixed(2400, [4, 0, 0], { speedKmh: 50 }));
-  assert.equal(second.event?.kind, 'abrupt-motion');
-  assert.ok(second.severity > 0);
-  assert.equal(JSON.stringify(second).includes('braking'), false);
-  assert.equal(JSON.stringify(second).includes('turning'), false);
+  assert.equal(outlier.confidence, 'none');
+  assert.equal(motion.update(fixed(2200)).status, 'paused');
+  const resumed = motion.update(fixed(2300));
+  assert.equal(resumed.status, 'ready');
+  assert.equal(resumed.jerkMagnitude, null);
 });
 
-test('gravity-inclusive fallback works, while missing gravity direction limits event label', () => {
-  const motion = ready(false);
-  const first = motion.update(fixed(2100, null, { gravity: [0, 0, 13.8], speedKmh: 50 }));
-  assert.equal(first.event, null);
-  const second = motion.update(fixed(2200, null, { gravity: [0, 0, 14.8], speedKmh: 50 }));
-  assert.equal(second.diagnostic.source, 'gravity-compensated');
-  assert.equal(second.event?.kind, 'vertical-bump');
-  const noAxis = new MotionSmoothness();
-  noAxis.calibrate();
-  for (let time = 0; time <= 2000; time += 100)
-    noAxis.update(fixed(time, [0, 0, 0], { gravity: null }));
-  noAxis.update(fixed(2100, [0, 0, 4], { gravity: null, speedKmh: 50 }));
-  const generic = noAxis.update(fixed(2200, [0, 0, 5],
-    { gravity: null, speedKmh: 50 }));
-  assert.equal(generic.event?.kind, 'abrupt-motion');
-});
-
-test('nearby sustained pulses merge into one event without a severity reset', () => {
+test('abrupt lateral motion stays generic and nearby pulses merge', () => {
   const motion = ready();
-  motion.update(fixed(2100, [0, 0, 4], { speedKmh: 45 }));
-  const first = motion.update(fixed(2200, [0, 0, 5], { speedKmh: 45 }));
-  const startedAt = first.event.startedAt;
-  motion.update(fixed(2300, [0, 0, 0], { speedKmh: 45 }));
-  motion.update(fixed(2400, [0, 0, 4], { speedKmh: 45 }));
-  const merged = motion.update(fixed(2500, [0, 0, 5], { speedKmh: 45 }));
-  assert.equal(merged.event.startedAt, startedAt);
-  assert.equal(merged.event.lastAt, 2500);
-  assert.ok(merged.severity >= first.severity * .9);
+  motion.update(fixed(2100, { acceleration: [4, 0, 0], speedKmh: 45 }));
+  const first = motion.update(fixed(2200,
+    { acceleration: [5, 0, 0], speedKmh: 45 }));
+  assert.equal(first.event?.kind, 'abrupt-motion');
+  motion.update(fixed(2300, { speedKmh: 45 }));
+  motion.update(fixed(2400, { acceleration: [4, 0, 0], speedKmh: 45 }));
+  const merged = motion.update(fixed(2500,
+    { acceleration: [5, 0, 0], speedKmh: 45 }));
+  assert.equal(merged.event.startedAt, first.event.startedAt);
+  assert.equal(JSON.stringify(merged).includes('braking'), false);
+  assert.equal(JSON.stringify(merged).includes('turning'), false);
 });
 
-test('irregular intervals, missing samples, and GPS loss preserve honest confidence', () => {
+test('gyro yaw around gravity does not imply handling', () => {
   const motion = ready();
-  for (const time of [2080, 2210, 2450, 2560]) {
-    const state = motion.update(fixed(time, [0.05, 0, 0], { speedKmh: 35 }));
+  for (let time = 2100; time <= 2700; time += 100) {
+    const state = motion.update(fixed(time,
+      { rotation: [100, 2, 1], speedKmh: 45 }));
     assert.equal(state.status, 'ready');
-    assert.equal(state.event, null);
-    assert.ok(Number.isFinite(state.jerkMagnitude));
+    assert.ok(state.diagnostic.tiltRateDegS < 12);
   }
-  const noGps = motion.update(fixed(2660, [0, 0, 0],
-    { speedKmh: null, gpsFresh: false }));
+});
+
+test('single transverse gyro spike does not pause and stability checks need sustained evidence', () => {
+  const motion = ready();
+  const spike = motion.update(fixed(2100,
+    { rotation: [0, 80, 0], speedKmh: 45 }));
+  assert.equal(spike.status, 'ready');
+  assert.equal(motion.update(fixed(2200, { speedKmh: 45 })).status, 'ready');
+});
+
+test('sustained transverse gyro tilt checks stability and recovers after one second', () => {
+  const motion = ready();
+  for (let time = 2100; time <= 2400; time += 100)
+    motion.update(fixed(time, { rotation: [1, 45, 0], speedKmh: 45 }));
+  assert.equal(motion.status, 'paused');
+  assert.equal(motion.reason, 'checking-stability');
+  assert.equal(motion.snapshot().diagnostic.transition.cause, 'sustained-tilt');
+  assert.ok(motion.snapshot().diagnostic.transition.durationMs >= 250);
+  for (let time = 2500; time <= 3500; time += 100)
+    motion.update(fixed(time, { speedKmh: 45 }));
+  assert.equal(motion.status, 'ready');
+  assert.equal(motion.snapshot().diagnostic.transition.kind, 'stability-recovered');
+});
+
+test('a gap during stability checking restarts the full stable interval', () => {
+  const motion = ready();
+  for (let time = 2100; time <= 2400; time += 100)
+    motion.update(fixed(time, { rotation: [0, 45, 0], speedKmh: 45 }));
+  for (let time = 2500; time <= 3000; time += 100)
+    motion.update(fixed(time, { speedKmh: 45 }));
+  assert.equal(motion.status, 'paused');
+  assert.equal(motion.update(fixed(3700, { speedKmh: 45 })).status, 'paused');
+  for (let time = 3800; time < 4700; time += 100)
+    assert.equal(motion.update(fixed(time, { speedKmh: 45 })).status, 'paused');
+  assert.equal(motion.update(fixed(4700, { speedKmh: 45 })).status, 'ready');
+});
+
+test('persistent shifted mount requires explicit setup even when parked is declared', () => {
+  const motion = ready();
+  const shifted = [4, 0, 8.95];
+  for (let time = 2100; time <= 4500; time += 100)
+    motion.update(fixed(time, { gravity: shifted, parked: true }));
+  assert.equal(motion.status, 'paused');
+  assert.equal(motion.reason, 'needs-calibration');
+  assert.equal(motion.snapshot().severity, 0);
+  assert.equal(motion.snapshot().diagnostic.transition.kind, 'setup-required');
+  assert.ok(motion.snapshot().diagnostic.transition.durationMs >= 2000);
+  for (let time = 4600; time <= 7000; time += 100)
+    assert.equal(motion.update(fixed(time, { parked: true })).reason,
+      'needs-calibration');
+  assert.equal(motion.calibrate().status, 'calibration');
+});
+
+test('gravity-only transient shift pauses before false jerk, then auto recovers', () => {
+  const motion = ready({ acceleration: null });
+  const shifted = [4, 0, 8.95];
+  for (let time = 2100; time <= 2400; time += 100)
+    motion.update(fixed(time, { acceleration: null, gravity: shifted,
+      rotation: null, speedKmh: 40 }));
+  assert.equal(motion.status, 'paused');
+  assert.equal(motion.reason, 'checking-stability');
+  assert.equal(motion.snapshot().severity, 0);
+  for (let time = 2500; time <= 3500; time += 100)
+    motion.update(fixed(time, { acceleration: null, rotation: null, speedKmh: 40 }));
+  assert.equal(motion.status, 'ready');
+  assert.equal(motion.snapshot().event, null);
+});
+
+test('gaps pause; GPS loss lowers confidence without stopping motion', () => {
+  const motion = ready();
+  const noGps = motion.update(fixed(2100,
+    { gpsFresh: false, speedKmh: null }));
   assert.equal(noGps.status, 'ready');
   assert.equal(noGps.confidence, 'low');
-  const gap = motion.update(fixed(3300, [0, 0, 0], { speedKmh: 35 }));
-  assert.equal(gap.status, 'paused');
-  assert.equal(gap.severity, 0);
-  const resumed = motion.update(fixed(3400, [0, 0, 0], { speedKmh: 35 }));
-  assert.equal(resumed.status, 'ready');
-  assert.equal(resumed.jerkMagnitude, null);
-  assert.equal(resumed.event, null);
-  const missing = motion.update(fixed(3500, null,
-    { gravity: null, speedKmh: 35 }));
-  assert.equal(missing.status, 'paused');
-  const noTimestamp = motion.update({ ...fixed(3600), time: null });
-  assert.equal(noTimestamp.status, 'paused');
-});
-
-test('phone rotation, orientation change, and parked handling latch neutral until recalibration', () => {
-  for (const changed of [
-    { rotation: [60, 0, 0] },
-    { orientation: [0, 90, 0] },
-    { acceleration: [3, 0, 0] },
-  ]) {
-    const motion = ready();
-    const held = motion.update(fixed(2100, [0, 0, 0], changed));
-    assert.equal(held.status, 'paused');
-    assert.equal(held.reason, 'mount-moved');
-    assert.equal(held.severity, 0);
-    assert.equal(held.confidence, 'none');
-    assert.equal(motion.update(fixed(2200)).status, 'paused');
-    assert.equal(motion.calibrate().status, 'calibration');
-  }
-  const fixedMount = ready();
-  assert.equal(fixedMount.update(fixed(2100, [0, 0, 0],
-    { orientation: [90, 0, 0], speedKmh: 35 })).status, 'ready',
-    'vehicle heading change alone is not phone handling');
-});
-
-test('gravity-only mount shift pauses before false jerk and latches after a stable rotation', () => {
-  const motion = ready(false);
-  const rotated = [4.905, 0, 8.496];
-  for (const [time, reason] of [[2100, 'gravity-axis-uncertain'],
-    [2200, 'gravity-axis-uncertain'], [2300, 'mount-moved']]) {
-    const state = motion.update(fixed(time, null,
-      { gravity: rotated, rotation: null, orientation: null, speedKmh: 40 }));
-    assert.equal(state.status, 'paused');
-    assert.equal(state.reason, reason);
-    assert.equal(state.event, null);
-    assert.equal(state.severity, 0);
-    assert.equal(state.jerkMagnitude, null);
-  }
-  assert.equal(motion.update(fixed(2400, null,
-    { rotation: null, orientation: null, speedKmh: 40 })).reason, 'mount-moved');
-  assert.equal(motion.calibrate().status, 'calibration');
-
-  const transient = ready(false);
-  assert.equal(transient.update(fixed(2100, null,
-    { gravity: rotated, rotation: null, orientation: null, speedKmh: 40 })).status,
-  'paused');
-  transient.update(fixed(2200, null,
-    { rotation: null, orientation: null, speedKmh: 40 }));
-  const resumed = transient.update(fixed(2300, null,
-    { rotation: null, orientation: null, speedKmh: 40 }));
-  assert.equal(resumed.status, 'ready');
-  assert.equal(resumed.event, null);
-  assert.equal(resumed.jerkMagnitude, null);
-});
-
-
-test('pause explanations distinguish automatic recovery from a calibration latch', () => {
-  const sensor=ready();
-  const gap=sensor.update({time:4000});
-  assert.equal(gap.reason,'sensor-gap');
-  assert.equal(motionPauseDetails(gap.reason).recovery,'automatic');
-  assert.match(motionPauseDetails(gap.reason).message,/two valid readings/);
-  sensor.update(fixed(4100));
-  assert.equal(sensor.update(fixed(4200)).status,'ready');
-
-  const moved=ready();
-  moved.update(fixed(2100,[0,0,0],{rotation:[0,60,0]}));
-  assert.equal(moved.reason,'mount-moved');
-  assert.equal(motionPauseDetails(moved.reason).recovery,'recalibrate');
-  assert.match(motionPauseDetails(moved.reason).message,/Recalibrate while parked/);
-  assert.equal(moved.update({time:5000}).reason,'mount-moved','a sensor gap cannot clear a calibration latch');
-  assert.equal(moved.update(fixed(5100)).reason,'mount-moved');
-  moved.calibrate();
-  for(let time=5200;time<=7200;time+=100)moved.update(fixed(time));
-  assert.equal(moved.status,'ready');
-  assert.equal(motionPauseDetails('screen-orientation-changed').recovery,'recalibrate');
-  assert.equal(motionPauseDetails('sensor-outlier').recovery,'automatic');
-  assert.equal(motionPauseDetails('recording-limit').recovery,'restart-recording');
+  assert.equal(motion.update(fixed(2800)).status, 'paused');
+  assert.equal(motion.update(fixed(2900)).status, 'ready');
+  assert.equal(motion.update(fixed(3000)).status, 'ready');
+  assert.equal(motion.update(fixed(3100,
+    { acceleration: null, gravity: null })).status, 'paused');
 });

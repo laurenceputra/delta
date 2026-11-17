@@ -156,6 +156,80 @@ test('chunk validation rejects bad gzip and expanded sizes without storing data'
   assert.equal((await handleDiagnostics(blocked, env)).status, 404);
 });
 
+test('UTF-8 event line byte cap rejects multibyte oversized event', async () => {
+  const { env, objects } = fixture();
+  const auth = await handleDiagnostics(request('/api/diagnostics/auth', 'POST', JSON.stringify({ key: env.DIAGNOSTICS_UPLOAD_KEY })), env);
+  const cookie = auth.headers.get('set-cookie').split(';')[0], capability = 'e'.repeat(64);
+  const event = { type: 'motion', recordedAt: new Date().toISOString(), seq: 0,
+    motion: { kind: 'sample', text: '界'.repeat(90000) } };
+  const expanded = Buffer.from(JSON.stringify(event) + '\n');
+  const gzip = gzipSync(expanded);
+  assert.ok(JSON.stringify(event).length < 256 * 1024 && expanded.length > 256 * 1024);
+  const recordingId = crypto.randomUUID();
+  const manifest = { recordingId, formatVersion: 1, appVersion: 'test', buildId: 'test',
+    roadDataVersion: env.ROAD_DATA_VERSION, configuration: {}, startedAt: event.recordedAt,
+    endedAt: event.recordedAt, issue: '', eventCount: 1,
+    chunks: [{ index: 0, sha256: hash(gzip), compressedBytes: gzip.length,
+      expandedBytes: expanded.length, eventCount: 1 }] };
+  const headers = { cookie, 'x-upload-token': capability };
+  assert.equal((await handleDiagnostics(request('/api/diagnostics/recordings', 'POST', JSON.stringify({ manifest }), headers), env)).status, 201);
+  assert.equal((await handleDiagnostics(request(`/api/diagnostics/recordings/${recordingId}/chunks/0`, 'PUT', gzip,
+    { ...headers, 'content-encoding': 'gzip' }), env)).status, 422);
+  assert.ok(!objects.has(`diagnostics/${recordingId}/0.ndjson.gz`));
+});
+
+test('packed upload accepts multi-megabyte NDJSON within network limits', async () => {
+  const { env, objects } = fixture();
+  const auth = await handleDiagnostics(request('/api/diagnostics/auth', 'POST', JSON.stringify({ key: env.DIAGNOSTICS_UPLOAD_KEY })), env);
+  const cookie = auth.headers.get('set-cookie').split(';')[0], capability = 'a'.repeat(64);
+  const recordedAt = new Date().toISOString();
+  const count = 12000;
+  const expanded = Buffer.from(Array.from({ length: count }, (_, seq) => JSON.stringify({
+    type: 'motion', recordedAt, seq, motion: { kind: 'sample', data: hash(String(seq)).padEnd(320, 'x') }
+  })).join('\n') + '\n');
+  const gzip = gzipSync(expanded);
+  assert.ok(expanded.length > 4 * 1024 * 1024 && expanded.length < 8 * 1024 * 1024);
+  assert.ok(gzip.length < 1024 * 1024);
+  const recordingId = crypto.randomUUID();
+  const manifest = { recordingId, formatVersion: 1, appVersion: 'test', buildId: 'test',
+    roadDataVersion: env.ROAD_DATA_VERSION, configuration: {}, startedAt: recordedAt,
+    endedAt: recordedAt, issue: '', eventCount: count,
+    chunks: [{ index: 0, sha256: hash(gzip), compressedBytes: gzip.length,
+      expandedBytes: expanded.length, eventCount: count }] };
+  assert.equal(validateManifest(manifest), true);
+  const headers = { cookie, 'x-upload-token': capability };
+  assert.equal((await handleDiagnostics(request('/api/diagnostics/recordings', 'POST', JSON.stringify({ manifest }), headers), env)).status, 201);
+  const start = performance.now();
+  const cpuStart = process.cpuUsage();
+  const result = await handleDiagnostics(request(`/api/diagnostics/recordings/${recordingId}/chunks/0`, 'PUT', gzip,
+    { ...headers, 'content-encoding': 'gzip' }), env);
+  const uploadMs = Math.round(performance.now() - start);
+  const cpu = process.cpuUsage(cpuStart);
+  assert.equal(result.status, 201);
+  assert.ok(objects.has(`diagnostics/${recordingId}/0.ndjson.gz`));
+  assert.equal((await handleDiagnostics(request(`/api/diagnostics/recordings/${recordingId}/finalize`, 'POST', undefined, headers), env)).status, 200);
+  const analyst = { 'oai-authenticated-user-id': 'owner', 'oai-authenticated-user-email': 'analyst@example.com' };
+  const call = async (name, args) => {
+    const response = await handleDiagnostics(request('/mcp', 'POST', JSON.stringify({ jsonrpc: '2.0', id: 1,
+      method: 'tools/call', params: { name, arguments: { recordingId, index: 0, ...args } } }), analyst), env);
+    return JSON.parse((await response.json()).result.content[0].text);
+  };
+  const first = await call('recording_events', { limit: 100 });
+  assert.equal(first.events.length, 100);
+  assert.equal(first.nextEventOffset, 100);
+  assert.equal(first.nextIndex, null);
+  const last = await call('recording_events', { eventOffset: count - 2 });
+  assert.equal(last.events.length, 2);
+  assert.equal(last.nextEventOffset, null);
+  const bytes = await call('export_recording', { byteLength: 65536 });
+  assert.equal(Buffer.from(bytes.data, 'base64').length, 65536);
+  assert.equal(bytes.nextByteOffset, 65536);
+  assert.equal(bytes.nextIndex, null);
+  const end = await call('export_recording', { byteOffset: gzip.length - 100 });
+  assert.equal(end.nextByteOffset, null);
+  console.log(`packed upload local worker: ${gzip.length} compressed bytes, ${expanded.length} expanded bytes, ${uploadMs} ms, CPU ${Math.round((cpu.user + cpu.system) / 1000)} ms, rss ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MiB`);
+});
+
 test('expired rows are hidden and cleanup pages through orphan objects', async () => {
   const { env, sqlite, objects } = fixture();
   const id = crypto.randomUUID();

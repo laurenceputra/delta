@@ -12,11 +12,21 @@ const angle = (a, b) => {
   const denominator = magnitude(a) * magnitude(b);
   return denominator > 0 ? Math.acos(Math.max(-1, Math.min(1, dot(a, b) / denominator))) * 180 / Math.PI : null;
 };
-const orientationDifference = (a, b, ignoreYaw = false) => a && b ?
-  Math.max(...a.map((value, i) => ignoreYaw && i === 0 ? 0 :
-    Math.abs(((value - b[i] + 540) % 360) - 180))) : null;
 const rounded = value => Number.isFinite(value) ? Math.round(value * 1000) / 1000 : null;
 const roundedVector = value => value?.map(rounded) || null;
+const subtract = (a, b) => a.map((value, i) => value - b[i]);
+const median = values => {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+};
+const robustVector = samples => [0, 1, 2].map(i => median(samples.map(value => value[i])));
+// DeviceMotion's alpha/beta/gamma axes correspond to device z/x/y.
+const tiltRate = (rotation, gravity) => {
+  if (!rotation || !gravity) return null;
+  const cartesian = [rotation[1], rotation[2], rotation[0]];
+  const alongGravity = dot(cartesian, gravity) / magnitude(gravity);
+  return Math.sqrt(Math.max(0, magnitude(cartesian) ** 2 - alongGravity ** 2));
+};
 
 export class MotionSmoothness {
   constructor() { this.reset(); }
@@ -35,13 +45,16 @@ export class MotionSmoothness {
     this.event = null;
     this.resumeSamples = 0;
     this.gravityShift = null;
+    this.tiltCandidate = null;
+    this.stableSince = null;
+    this.transition = null;
     return this.snapshot();
   }
 
   calibrate() {
     this.reset();
     this.status = 'calibration';
-    this.reason = 'park-and-hold-still';
+    this.reason = 'warming-up';
     return this.snapshot();
   }
 
@@ -58,7 +71,8 @@ export class MotionSmoothness {
       event: this.status === 'ready' && this.event ? { ...this.event,
         peakSeverity: rounded(this.event.peakSeverity) } : null,
       diagnostic: { source: null, dtMs: null, rawAcceleration: null,
-        rotationMagnitude: null, gravityAngleDeg: null, ...extra } };
+        rotationMagnitude: null, gravityAngleDeg: null, tiltRateDegS: null,
+        transition: this.transition, ...extra } };
   }
 
   update(input = {}) {
@@ -69,18 +83,22 @@ export class MotionSmoothness {
     const orientation = vector3(input.orientation);
     const speedKmh = input.speedKmh == null ? NaN : Number(input.speedKmh);
     const gpsFresh = input.gpsFresh === true;
-    const freshMoving = gpsFresh && Number.isFinite(speedKmh) && speedKmh > 3;
-    const parkedDeclaration = input.parked === true && !freshMoving;
     const rotationMagnitude = rotation ? magnitude(rotation) : null;
     const gravityAngleDeg = includingGravity && this.gravityBaseline ?
-      angle(includingGravity, this.gravityBaseline) : null;
+      angle(acceleration ? subtract(includingGravity, acceleration) : includingGravity,
+        this.gravityBaseline) : null;
+    const gravityEstimate = includingGravity && acceleration ?
+      subtract(includingGravity, acceleration) : includingGravity;
+    const tiltRateDegS = tiltRate(rotation, gravityEstimate || this.gravityBaseline);
     const source = acceleration ? 'linear' : includingGravity ? 'gravity-compensated' : null;
     const raw = acceleration || includingGravity && this.gravityBaseline &&
       includingGravity.map((value, i) => value - this.gravityBaseline[i]);
     const diagnostic = { source, rawAcceleration: roundedVector(raw),
-      rotationMagnitude: rounded(rotationMagnitude), gravityAngleDeg: rounded(gravityAngleDeg) };
+      rotationMagnitude: rounded(rotationMagnitude), gravityAngleDeg: rounded(gravityAngleDeg),
+      tiltRateDegS: rounded(tiltRateDegS) };
 
-    if (this.status === 'unavailable' || this.reason === 'mount-moved') return this.snapshot(diagnostic);
+    if (this.status === 'unavailable' || this.reason === 'needs-calibration')
+      return this.snapshot(diagnostic);
     if (!Number.isFinite(time)) {
       if (this.status !== 'calibration') this.pause('sensor-gap');
       return this.snapshot(diagnostic);
@@ -88,40 +106,55 @@ export class MotionSmoothness {
     const dtMs = this.lastTime == null ? null : time - this.lastTime;
     diagnostic.dtMs = rounded(dtMs);
     if (dtMs != null && (dtMs <= 0 || dtMs > 500)) {
-      if (this.status === 'calibration') this.calibration = null;
+      if (this.status === 'calibration') this.calibration = [];
+      else if (this.reason === 'checking-stability') this.stableSince = null;
       else this.pause('sensor-gap');
     }
     this.lastTime = time;
     if (this.status === 'calibration')
-      return this.updateCalibration({ time, acceleration, includingGravity, rotationMagnitude,
-        orientation, speedKmh, gpsFresh, parkedDeclaration, diagnostic });
+      return this.updateCalibration({ time, acceleration, includingGravity, gravityEstimate,
+        rotationMagnitude, orientation, speedKmh, gpsFresh, diagnostic });
     if (!raw) {
-      this.pause('sensor-gap');
+      if (this.reason === 'checking-stability') this.stableSince = null;
+      else this.pause('sensor-gap');
       return this.snapshot(diagnostic);
     }
-    const mountRotation = rotationMagnitude != null && rotationMagnitude > 40;
-    // Compass yaw changes with the car's heading even when the phone is fixed.
-    const mountOrientation = orientationDifference(orientation, this.orientationBaseline, true);
-    const stationaryHandling = (parkedDeclaration || gpsFresh &&
-      Number.isFinite(speedKmh) && speedKmh <= 3) && magnitude(raw) > 1.8;
-    if (mountRotation || mountOrientation != null && mountOrientation > 15 ||
-        stationaryHandling) {
-      this.pause('mount-moved');
-      return this.snapshot(diagnostic);
-    }
-    const gravityShift = source === 'gravity-compensated' && !rotation && !orientation &&
-      gravityAngleDeg != null && gravityAngleDeg > 25 &&
-      magnitude(includingGravity) >= 7.5 && magnitude(includingGravity) <= 11.5;
+    // A high angular rate is handling only when sustained and transverse to gravity.
+    if (tiltRateDegS != null && tiltRateDegS > 30) {
+      this.tiltCandidate ??= time;
+      if (time - this.tiltCandidate >= 250 && this.status !== 'paused')
+        this.enterStabilityCheck(time, diagnostic, 'sustained-tilt');
+    } else this.tiltCandidate = null;
+    const gravityShift = gravityAngleDeg != null && gravityAngleDeg > 15 &&
+      gravityEstimate && magnitude(gravityEstimate) >= 7.5 &&
+      magnitude(gravityEstimate) <= 11.5;
     if (gravityShift) {
-      const prior = this.gravityShift;
-      this.gravityShift = prior && time - prior.time <= 350 &&
-        angle(includingGravity, prior.vector) <= 8 ?
-        { count: prior.count + 1, time, vector: includingGravity } :
-        { count: 1, time, vector: includingGravity };
-      this.pause(this.gravityShift.count >= 3 ? 'mount-moved' : 'gravity-axis-uncertain');
-      return this.snapshot(diagnostic);
+      this.gravityShift ??= { since: time, samples: [] };
+      this.gravityShift.samples.push([...gravityEstimate]);
+      if (this.gravityShift.samples.length > 40) this.gravityShift.samples.shift();
+      if (this.status !== 'paused' && time - this.gravityShift.since >= 250)
+        this.enterStabilityCheck(time, diagnostic, 'gravity-shift');
+    } else this.gravityShift = null;
+    if (this.reason === 'checking-stability') {
+      const stable = gravityAngleDeg != null && gravityAngleDeg <= 8 &&
+        (tiltRateDegS == null || tiltRateDegS < 12) && magnitude(raw) < 30;
+      this.stableSince = stable ? this.stableSince ?? time : null;
+      if (stable && time - this.stableSince >= 1000) {
+        this.status = 'ready';
+        this.reason = null;
+        this.filtered = null;
+        this.jerk = null;
+        this.transition = { at: time, kind: 'stability-recovered',
+          gravityAngleDeg: rounded(gravityAngleDeg), tiltRateDegS: rounded(tiltRateDegS) };
+      } else if (this.gravityShift && time - this.gravityShift.since >= 2000 &&
+          magnitude(raw) < 0.5 && (rotationMagnitude == null || rotationMagnitude < 8)) {
+        const durationMs = time - this.gravityShift.since;
+        this.pause('needs-calibration');
+        this.transition = { at: time, kind: 'setup-required', durationMs,
+          gravityAngleDeg: rounded(gravityAngleDeg), tiltRateDegS: rounded(tiltRateDegS) };
+        return this.snapshot(diagnostic);
+      } else return this.snapshot(diagnostic);
     }
-    this.gravityShift = null;
     if (magnitude(raw) > 30) {
       this.pause('sensor-outlier');
       return this.snapshot(diagnostic);
@@ -180,36 +213,22 @@ export class MotionSmoothness {
     return this.snapshot(diagnostic);
   }
 
-  updateCalibration({ time, acceleration, includingGravity, rotationMagnitude,
-    orientation, speedKmh, gpsFresh, parkedDeclaration, diagnostic }) {
-    const parked = parkedDeclaration || gpsFresh && Number.isFinite(speedKmh) && speedKmh <= 3;
-    const gravityValid = !includingGravity || magnitude(includingGravity) >= 7.5 &&
-      magnitude(includingGravity) <= 11.5;
-    const still = parked && gravityValid && !!(acceleration || includingGravity) &&
-      (!acceleration || magnitude(acceleration) <= 0.35) &&
-      (rotationMagnitude == null || rotationMagnitude <= 8);
-    if (!still) {
-      this.calibration = null;
-      this.reason = parked ? 'hold-still' : 'park-and-hold-still';
-      return this.snapshot(diagnostic);
-    }
-    const prior = this.calibration;
-    if (!prior || prior.gravity && includingGravity && angle(prior.gravity,
-        includingGravity) > 6 || orientationDifference(orientation, prior?.orientation) > 5) {
-      this.calibration = { since: time, count: 1,
-        gravity: includingGravity && [...includingGravity], orientation };
-      this.reason = 'calibrating';
-      return this.snapshot(diagnostic);
-    }
-    prior.count++;
-    if (includingGravity) prior.gravity = prior.gravity ? prior.gravity.map((value, i) =>
-      value + (includingGravity[i] - value) / prior.count) : [...includingGravity];
-    if (time - prior.since < 1800 || prior.count < 8) {
-      this.reason = 'calibrating';
-      return this.snapshot(diagnostic);
-    }
-    this.gravityBaseline = prior.gravity;
-    this.orientationBaseline = prior.orientation;
+  updateCalibration({ time, acceleration, includingGravity, gravityEstimate,
+    rotationMagnitude, orientation, speedKmh, gpsFresh, diagnostic }) {
+    this.calibration ??= [];
+    const quality = (acceleration || includingGravity) &&
+      (!acceleration || magnitude(acceleration) <= 30) &&
+      (!gravityEstimate || magnitude(gravityEstimate) >= 6 &&
+        magnitude(gravityEstimate) <= 13) &&
+      (rotationMagnitude == null || rotationMagnitude <= 150);
+    if (quality) this.calibration.push({ time, gravity: gravityEstimate, orientation });
+    this.calibration = this.calibration.filter(sample => time - sample.time <= 3200);
+    const samples = this.calibration;
+    this.reason = 'warming-up';
+    if (samples.length < 20 || time - samples[0].time < 3000) return this.snapshot(diagnostic);
+    const gravitySamples = samples.map(sample => sample.gravity).filter(Boolean);
+    this.gravityBaseline = gravitySamples.length >= 12 ? robustVector(gravitySamples) : null;
+    this.orientationBaseline = samples.find(sample => sample.orientation)?.orientation || null;
     this.status = 'ready';
     this.reason = null;
     this.confidence = !gpsFresh ? 'low' : this.gravityBaseline &&
@@ -218,7 +237,19 @@ export class MotionSmoothness {
     this.filtered = [0, 0, 0];
     this.jerk = null;
     this.calibration = null;
+    this.transition = { at: time, kind: 'warmup-complete',
+      validSamples: samples.length, gravityAvailable: !!this.gravityBaseline };
     return this.snapshot(diagnostic);
+  }
+
+  enterStabilityCheck(time, diagnostic, cause) {
+    this.pause('checking-stability');
+    this.stableSince = null;
+    const durationMs = cause === 'gravity-shift' ? time - this.gravityShift.since :
+      time - this.tiltCandidate;
+    this.transition = { at: time, kind: 'stability-check', cause, durationMs,
+      gravityAngleDeg: diagnostic.gravityAngleDeg,
+      tiltRateDegS: diagnostic.tiltRateDegS };
   }
 
   pause(reason) {

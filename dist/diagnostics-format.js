@@ -1,5 +1,8 @@
 export const FORMAT_VERSION = 1;
 export const MAX_CHUNK_EXPANDED_BYTES = 256 * 1024;
+export const MAX_LOCAL_CHUNK_EXPANDED_BYTES = MAX_CHUNK_EXPANDED_BYTES;
+export const MAX_UPLOAD_CHUNK_COMPRESSED_BYTES = 1024 * 1024;
+export const MAX_UPLOAD_CHUNK_EXPANDED_BYTES = 8 * 1024 * 1024;
 export const MAX_COMPRESSED_BYTES = 10 * 1024 * 1024;
 export const MAX_EXPANDED_BYTES = 50 * 1024 * 1024;
 export const MAX_CHUNKS = 2048;
@@ -31,7 +34,8 @@ export function validateManifest(manifest) {
   for (const [index, chunk] of manifest.chunks.entries()) {
     if (!plain(chunk) || chunk.index !== index || !hex.test(chunk.sha256 || '') ||
         !integer(chunk.compressedBytes) || chunk.compressedBytes < 1 ||
-        !integer(chunk.expandedBytes) || chunk.expandedBytes < 1 || chunk.expandedBytes > MAX_CHUNK_EXPANDED_BYTES ||
+        chunk.compressedBytes > MAX_UPLOAD_CHUNK_COMPRESSED_BYTES ||
+        !integer(chunk.expandedBytes) || chunk.expandedBytes < 1 || chunk.expandedBytes > MAX_UPLOAD_CHUNK_EXPANDED_BYTES ||
         !integer(chunk.eventCount) || chunk.eventCount < 1) return false;
     compressed += chunk.compressedBytes; expanded += chunk.expandedBytes; events += chunk.eventCount;
   }

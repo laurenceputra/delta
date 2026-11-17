@@ -1,17 +1,17 @@
 {
   "name": "delta-sg",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node dist/motion.test.mjs && node dist/readings.test.mjs && node dist/engine.test.mjs && node integration.test.mjs && node server/diagnostics.test.mjs && node scripts/replay-diagnostics.test.mjs",
+    "test": "node dist/upload.test.mjs && node dist/motion.test.mjs && node dist/readings.test.mjs && node dist/engine.test.mjs && node integration.test.mjs && node server/diagnostics.test.mjs && node scripts/replay-diagnostics.test.mjs",
     "dev": "npm run build && wrangler dev --local --ip 127.0.0.1 --port 4173",
-    "check": "node scripts/build-version.mjs --check && node --check dist/app.js && node --check dist/engine.js && node --check dist/sw.js && node --check dist/diagnostics.js && node --check server/diagnostics.js && node --check scripts/replay-diagnostics.mjs && node --check dist/motion.js && node --check dist/motion-controller.js",
+    "check": "node scripts/build-version.mjs --check && node --check dist/app.js && node --check dist/engine.js && node --check dist/sw.js && node --check dist/diagnostics.js && node --check server/diagnostics.js && node --check scripts/replay-diagnostics.mjs && node --check dist/motion.js && node --check dist/motion-controller.js && node --check dist/upload.js",
     "build:version": "node scripts/build-version.mjs",
     "build": "npm run build:version && node scripts/build-site.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply DIAGNOSTICS_DB --local",
-    "test:browser": "node scripts/diagnostics-browser.test.mjs && node --test scripts/adaptive-layout.test.mjs && node --test scripts/recovery-browser.test.mjs && node --test scripts/everyday-browser.test.mjs && node --test scripts/update-browser.test.mjs && node --test scripts/motion-browser.test.mjs"
+    "test:browser": "node scripts/diagnostics-browser.test.mjs && node --test scripts/adaptive-layout.test.mjs && node --test scripts/recovery-browser.test.mjs && node --test scripts/everyday-browser.test.mjs && node --test scripts/update-browser.test.mjs && node --test scripts/motion-browser.test.mjs && node scripts/upload-browser.test.mjs"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.10",

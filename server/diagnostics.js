@@ -1,4 +1,4 @@
-import { validateManifest, validateEvent, MAX_CHUNK_EXPANDED_BYTES } from '../dist/diagnostics-format.js';
+import { validateManifest, validateEvent, MAX_UPLOAD_CHUNK_EXPANDED_BYTES } from '../dist/diagnostics-format.js';
 
 const encoder = new TextEncoder();
 const hour = 3600000, day = 86400000;
@@ -132,6 +132,100 @@ async function inflateBounded(compressed, limit) {
   return result;
 }
 
+async function validatePackedChunk(compressed, expected, firstSeq) {
+  const reader = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const summary = { counts: {}, markers: [] };
+  let expandedBytes = 0, eventCount = 0, line = '';
+  const consume = value => {
+    if (!value) throw new Error('empty event');
+    if (encoder.encode(value).byteLength > 256 * 1024) throw new Error('event line limit');
+    let event;
+    try { event = JSON.parse(value); } catch { throw new Error('invalid event'); }
+    if (!validateEvent(event) || event.seq !== firstSeq + eventCount) throw new Error('invalid sequence');
+    eventCount++;
+    summary.counts[event.type] = (summary.counts[event.type] || 0) + 1;
+    if (summary.markers.length < 100 && event.type !== 'motion' &&
+        (event.type !== 'fix' || /outage|ramp|reset|recovery/i.test(JSON.stringify(event.state || {}))))
+      summary.markers.push({ seq: event.seq, recordedAt: event.recordedAt, type: event.type,
+        status: String(event.state?.status || '').slice(0, 80),
+        reason: String(event.state?.reason || '').slice(0, 120),
+        motionKind: String(event.motion?.kind || '').slice(0, 40),
+        motionPhase: String(event.motion?.phase || '').slice(0, 60) });
+  };
+  const appendDecoded = decoded => {
+    let start = 0, end;
+    while ((end = decoded.indexOf('\n', start)) !== -1) {
+      const part = decoded.slice(start, end);
+      if (line.length + part.length > 256 * 1024) throw new Error('event line limit');
+      consume(line + part);
+      line = ''; start = end + 1;
+    }
+    const tail = decoded.slice(start);
+    if (line.length + tail.length > 256 * 1024) throw new Error('event line limit');
+    line += tail;
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      expandedBytes += value.byteLength;
+      if (expandedBytes > expected.expandedBytes || expandedBytes > MAX_UPLOAD_CHUNK_EXPANDED_BYTES) throw new Error('expanded limit');
+      appendDecoded(decoder.decode(value, { stream: true }));
+    }
+    line += decoder.decode();
+    if (line) consume(line);
+    if (expandedBytes !== expected.expandedBytes || eventCount !== expected.eventCount) throw new Error('size/count mismatch');
+    return summary;
+  } finally { try { await reader.cancel(); } catch {} reader.releaseLock(); }
+}
+
+async function readEventPage(compressed, expected, firstSeq, eventOffset, limit) {
+  const reader = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const events = [];
+  let expandedBytes = 0, index = 0, responseBytes = 0, line = '', pageFull = false;
+  const consume = value => {
+    if (!value) throw new Error('empty event');
+    if (encoder.encode(value).byteLength > 256 * 1024) throw new Error('event line limit');
+    let event;
+    try { event = JSON.parse(value); } catch { throw new Error('invalid event'); }
+    if (!validateEvent(event) || event.seq !== firstSeq + index) throw new Error('invalid sequence');
+    if (index >= eventOffset && events.length < limit && !pageFull) {
+      const bytes = encoder.encode(value).length;
+      if (!events.length || responseBytes + bytes <= 256 * 1024) {
+        events.push(event); responseBytes += bytes;
+      } else pageFull = true;
+    }
+    index++;
+  };
+  const appendDecoded = decoded => {
+    let start = 0, end;
+    while ((end = decoded.indexOf('\n', start)) !== -1) {
+      const part = decoded.slice(start, end);
+      if (line.length + part.length > 256 * 1024) throw new Error('event line limit');
+      consume(line + part);
+      line = ''; start = end + 1;
+    }
+    const tail = decoded.slice(start);
+    if (line.length + tail.length > 256 * 1024) throw new Error('event line limit');
+    line += tail;
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      expandedBytes += value.byteLength;
+      if (expandedBytes > expected.expandedBytes || expandedBytes > MAX_UPLOAD_CHUNK_EXPANDED_BYTES) throw new Error('expanded limit');
+      appendDecoded(decoder.decode(value, { stream: true }));
+    }
+    line += decoder.decode();
+    if (line) consume(line);
+    if (expandedBytes !== expected.expandedBytes || index !== expected.eventCount) throw new Error('size/count mismatch');
+    return { events, nextEventOffset: eventOffset + events.length < index ? eventOffset + events.length : null };
+  } finally { try { await reader.cancel(); } catch {} reader.releaseLock(); }
+}
+
 async function upload(request, env, row, index) {
   if (row.status !== 'uploading') return error('Recording finalized', 409);
   const expected = JSON.parse(row.manifest).chunks[index];
@@ -142,15 +236,10 @@ async function upload(request, env, row, index) {
   if (compressed.byteLength !== expected.compressedBytes || !equal(await sha256(compressed), expected.sha256.toLowerCase())) return error('Chunk checksum mismatch', 422);
   const old = await db(env).prepare('SELECT * FROM diagnostic_chunks WHERE recording_id=? AND chunk_index=?').bind(row.id, index).first();
   if (old) return equal(old.sha256, expected.sha256.toLowerCase()) ? json({ index, sha256: old.sha256, status: 'present' }) : error('Chunk conflict', 409);
-  let expanded;
-  try { expanded = await inflateBounded(compressed, MAX_CHUNK_EXPANDED_BYTES); } catch { return error('Invalid gzip or expanded size', 422); }
-  if (expanded.byteLength !== expected.expandedBytes || expanded.byteLength > MAX_CHUNK_EXPANDED_BYTES) return error('Expanded size mismatch', 422);
-  let lines;
-  try { lines = new TextDecoder('utf-8', { fatal: true }).decode(expanded).trimEnd().split('\n'); } catch { return error('Invalid UTF-8', 422); }
-  if (lines.length !== expected.eventCount) return error('Event count mismatch', 422);
   const firstSeq = JSON.parse(row.manifest).chunks.slice(0, index).reduce((n, chunk) => n + chunk.eventCount, 0);
-  const summary = { counts: {}, markers: [] };
-  try { for (const [offset, line] of lines.entries()) { const event = JSON.parse(line); if (!validateEvent(event) || event.seq !== firstSeq + offset) return error('Invalid event sequence', 422); summary.counts[event.type] = (summary.counts[event.type] || 0) + 1; if (summary.markers.length < 100 && event.type !== 'motion' && (event.type !== 'fix' || /outage|ramp|reset|recovery/i.test(JSON.stringify(event.state || {})))) summary.markers.push({ seq: event.seq, recordedAt: event.recordedAt, type: event.type, status: String(event.state?.status || '').slice(0,80), reason: String(event.state?.reason || '').slice(0,120), motionKind: String(event.motion?.kind || '').slice(0,40), motionPhase: String(event.motion?.phase || '').slice(0,60) }); } } catch { return error('Invalid event', 422); }
+  let summary;
+  try { summary = await validatePackedChunk(compressed, expected, firstSeq); }
+  catch { return error('Invalid gzip, event, or expanded size', 422); }
   const key = objectKey(row.id, index);
   await bucket(env).put(key, compressed, { httpMetadata: { contentType: 'application/x-ndjson', contentEncoding: 'gzip' }, customMetadata: { sha256: expected.sha256.toLowerCase() } });
   try { await db(env).prepare('INSERT INTO diagnostic_chunks(recording_id,chunk_index,sha256,compressed_bytes,expanded_bytes,event_count,object_key,event_summary) VALUES(?,?,?,?,?,?,?,?)').bind(row.id, index, expected.sha256.toLowerCase(), expected.compressedBytes, expected.expandedBytes, expected.eventCount, key, JSON.stringify(summary)).run(); }
@@ -189,8 +278,8 @@ async function mcp(request, env) {
     tool('diagnostics_health', 'Verify diagnostic storage, schema, static assets and upload readiness without reading recordings', { type: 'object', properties: {} }),
     tool('list_recordings', 'List completed diagnostic recordings', { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 100 }, before: { type: 'integer' } } }),
     tool('recording_summary', 'Read a completed recording manifest and paged event markers', { type: 'object', properties: { recordingId: { type: 'string' }, offset: { type: 'integer', minimum: 0 } }, required: ['recordingId'] }),
-    tool('recording_events', 'Read one bounded event chunk', { type: 'object', properties: { recordingId: { type: 'string' }, index: { type: 'integer', minimum: 0 } }, required: ['recordingId', 'index'] }),
-    tool('export_recording', 'Export manifest and one base64 gzip chunk at a time', { type: 'object', properties: { recordingId: { type: 'string' }, index: { type: 'integer', minimum: 0 } }, required: ['recordingId', 'index'] }),
+    tool('recording_events', 'Read a bounded page of one event chunk', { type: 'object', properties: { recordingId: { type: 'string' }, index: { type: 'integer', minimum: 0 }, eventOffset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, required: ['recordingId', 'index'] }),
+    tool('export_recording', 'Export a bounded base64 slice of one gzip chunk', { type: 'object', properties: { recordingId: { type: 'string' }, index: { type: 'integer', minimum: 0 }, byteOffset: { type: 'integer', minimum: 0 }, byteLength: { type: 'integer', minimum: 1, maximum: 65536 } }, required: ['recordingId', 'index'] }),
     tool('export_road_data', 'Export a bounded range of a matching road data file', { type: 'object', properties: { roadDataVersion: { type: 'string' }, file: { type: 'string', enum: roadFiles }, offset: { type: 'integer', minimum: 0 } }, required: ['roadDataVersion', 'file', 'offset'] }),
     tool('cleanup_expired', 'Delete expired recordings and orphan chunks; repeat with returned cursors until null', { type: 'object', properties: { diagnosticsCursor: { type: 'string' }, roadCursor: { type: 'string' } } }, false)
   ] });
@@ -238,12 +327,25 @@ async function mcp(request, env) {
     const compressed = new Uint8Array(await object.arrayBuffer());
     if (!equal(await sha256(compressed), manifest.chunks[args.index].sha256.toLowerCase())) return toolError('Chunk corrupted');
     if (name === 'export_recording') {
+      const offset = args.byteOffset === undefined ? 0 : args.byteOffset;
+      const requested = args.byteLength === undefined ? 65536 : args.byteLength;
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset >= compressed.length ||
+          !Number.isSafeInteger(requested) || requested < 1 || requested > 65536) return toolError('Invalid byte range');
+      const slice = compressed.subarray(offset, Math.min(compressed.length, offset + requested));
       let binary = '';
-      for (let i = 0; i < compressed.length; i += 8192) binary += String.fromCharCode(...compressed.subarray(i, i + 8192));
-      return content({ manifestBase, chunkCount: chunkMetadata.length, chunkMetadata: chunkMetadata[args.index], index: args.index, data: btoa(binary), nextIndex: args.index + 1 < chunkMetadata.length ? args.index + 1 : null });
+      for (let i = 0; i < slice.length; i += 8192) binary += String.fromCharCode(...slice.subarray(i, i + 8192));
+      const nextByteOffset = offset + slice.length < compressed.length ? offset + slice.length : null;
+      return content({ manifestBase, chunkCount: chunkMetadata.length, chunkMetadata: chunkMetadata[args.index], index: args.index, byteOffset: offset, data: btoa(binary), nextByteOffset, nextIndex: nextByteOffset === null && args.index + 1 < chunkMetadata.length ? args.index + 1 : null });
     }
-    const expanded = new TextDecoder('utf-8', { fatal: true }).decode(await inflateBounded(compressed, MAX_CHUNK_EXPANDED_BYTES));
-    return content({ recordingId: row.id, index: args.index, events: expanded.trimEnd().split('\n').map(JSON.parse), nextIndex: args.index + 1 < manifest.chunks.length ? args.index + 1 : null });
+    const offset = args.eventOffset === undefined ? 0 : args.eventOffset;
+    const limit = args.limit === undefined ? 100 : args.limit;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= manifest.chunks[args.index].eventCount ||
+        !Number.isSafeInteger(limit) || limit < 1 || limit > 200) return toolError('Invalid event range');
+    let page;
+    try { page = await readEventPage(compressed, manifest.chunks[args.index], chunkMetadata.slice(0, args.index).reduce((n, c) => n + c.eventCount, 0), offset, limit); }
+    catch { return toolError('Chunk corrupted'); }
+    return content({ recordingId: row.id, index: args.index, eventOffset: offset, ...page,
+      nextIndex: page.nextEventOffset === null && args.index + 1 < manifest.chunks.length ? args.index + 1 : null });
   }
   return toolError('Unknown tool or invalid arguments');
 }
