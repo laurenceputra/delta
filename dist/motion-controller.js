@@ -3,6 +3,21 @@ import { MotionSmoothness } from './motion.js';
 const vector = value => value && ['x','y','z'].every(key => Number.isFinite(value[key])) ? [value.x,value.y,value.z] : null;
 const setText=(element,value)=>{if(element.textContent!==value)element.textContent=value;};
 const compact = value => Array.isArray(value) ? value.map(n => Math.round(n * 1000) / 1000) : null;
+export function motionPauseDetails(reason) {
+  const details={
+    'sensor-gap':['Sensor readings interrupted. Feedback resumes automatically after two valid readings.','automatic'],
+    'background':['App was in the background. Feedback resumes automatically when the app is visible and sensor readings return.','automatic'],
+    'screen-orientation-changed':['Phone orientation changed. Recalibrate while parked.','recalibrate'],
+    'mount-moved':['Phone or mount movement detected. Recalibrate while parked.','recalibrate'],
+    'gravity-axis-uncertain':['Phone orientation is uncertain. Feedback resumes automatically if readings stabilise; recalibrate while parked if it persists.','automatic'],
+    'sensor-outlier':['An extreme sensor reading was rejected. Feedback resumes automatically after two clean readings.','automatic'],
+    'recording-stopped':['Diagnostics stopped. Feedback is paused. Recalibrate while parked to restart local recording.','restart-recording'],
+    'recording-limit':['Diagnostics reached a recording or storage limit. Free space if needed, then recalibrate while parked.','restart-recording'],
+    'needs-calibration':['Motion calibration is required. Recalibrate while parked.','recalibrate']
+  };
+  const [message,recovery]=details[reason]||['Sensor data is unavailable. Recalibrate while parked if readings do not return.','unknown'];
+  return {reason,message,recovery};
+}
 export class MotionBetaController {
   constructor({ui,getContext,getDiagnostics,onRecordingStart}) {
     Object.assign(this,{ui,getContext,getDiagnostics,onRecordingStart});
@@ -43,7 +58,7 @@ export class MotionBetaController {
       this.enabled=true;this.setupComplete=false;this.recordingReady=false;this.ownedRecordingId=null;
       this.counts={abrupt:0,bumps:0};this.lastEventKey=null;this.latest=null;
       this.lastSensorAt=performance.now();this.lastDiagnosticAt=-Infinity;this.lastPaintAt=-Infinity;
-      this.sensorStale=false;this.receivedSensor=false;this.model.calibrate();
+      this.sensorStale=false;this.receivedSensor=false;this.backgroundPaused=false;this.screenOrientationChanged=false;this.lastFeedbackReason=null;this.model.calibrate();
       this.calibrationScreenAngle=screen.orientation?.angle??window.orientation??0;
       this.message='Keep the mounted phone still for calibration. Diagnostics start after setup succeeds.';
       window.addEventListener('devicemotion',this.onMotion);
@@ -57,7 +72,7 @@ export class MotionBetaController {
     if(!this.enabled||this.busy)return;
     try{this.parkedSetupAllowed();}catch(error){this.message=error.message;this.render();return;}
     this.model.calibrate();this.latest=null;this.setupComplete=false;this.recordingReady=false;
-    this.receivedSensor=false;this.sensorStale=false;this.lastSensorAt=performance.now();
+    this.receivedSensor=false;this.sensorStale=false;this.backgroundPaused=false;this.screenOrientationChanged=false;this.lastSensorAt=performance.now();
     this.calibrationScreenAngle=screen.orientation?.angle??window.orientation??0;this.armSetupTimeout();
     this.message='Keep the mounted phone still for recalibration.';
     this.captureEvent('calibration-started');this.render();
@@ -103,14 +118,14 @@ export class MotionBetaController {
       orientation:null,screenAngle:screen.orientation?.angle??window.orientation??0,...this.getContext()};
     if(!sample.acceleration&&!sample.gravity){
       this.latest=this.model.update(sample);
-      if(!this.sensorStale)this.captureEvent('sensor-paused');
       this.sensorStale=true;
       if(time-this.lastPaintAt>=50){this.lastPaintAt=time;this.render();}
       return;
     }
     this.lastSensorAt=time;this.sensorStale=false;this.receivedSensor=true;
-    if(sample.screenAngle!==this.calibrationScreenAngle)this.model.pause('mount-moved');
+    if(sample.screenAngle!==this.calibrationScreenAngle){this.screenOrientationChanged=true;this.model.pause('mount-moved');}
     this.latest=this.model.update(sample);
+    if(this.latest.status==='ready')this.backgroundPaused=false;
     if(this.latest.status==='ready'&&!this.setupComplete){
       this.setupComplete=true;clearTimeout(this.setupTimer);void this.startRecording();
     }
@@ -119,7 +134,7 @@ export class MotionBetaController {
       this.getDiagnostics().capture('motion',{motion:{atMs:Math.round(time),acceleration:compact(sample.acceleration),
         includingGravity:compact(sample.gravity),rotation:compact(sample.rotation),screenAngle:sample.screenAngle,
         filtered:compact(this.latest.filteredAcceleration),jerk:compact(this.latest.jerk),
-        severity:Math.round(this.latest.severity*1000)/1000,status:this.latest.status,confidence:this.latest.confidence}});
+        severity:Math.round(this.latest.severity*1000)/1000,status:this.latest.status,reason:this.feedbackReason(),confidence:this.latest.confidence}});
     }
     const detected=this.latest.event;
     if(detected&&this.recordingReady&&this.latest.status==='ready'){
@@ -139,14 +154,15 @@ export class MotionBetaController {
     if(!this.receivedSensor&&age>8000){void this.disable('No sensor readings arrived. Check browser permissions and try again while parked.');return;}
     if(this.receivedSensor&&age>1500&&!this.sensorStale){
       this.sensorStale=true;this.latest=this.model.update({time:performance.now()});
-      this.captureEvent('sensor-paused');this.render();
+      this.render();
     }
   }
   onVisibility() {
     if(!this.enabled)return;
     if(document.visibilityState!=='visible'){
+      this.backgroundPaused=true;
       this.latest=this.model.update({time:performance.now()});this.sensorStale=true;
-      this.captureEvent('background-paused');this.getDiagnostics()?.checkpoint();this.render();
+      this.render();this.getDiagnostics()?.checkpoint();
     }
   }
   async disable(message='Beta off. Saved diagnostics remain on this device.') {
@@ -156,6 +172,11 @@ export class MotionBetaController {
     const diagnostics=this.getDiagnostics();
     if(this.ownedRecordingId&&diagnostics?.active?.id===this.ownedRecordingId)await diagnostics.stop();
     this.ownedRecordingId=null;this.render();
+  }
+  feedbackReason() {
+    if(this.latest?.reason==='mount-moved')return this.screenOrientationChanged?'screen-orientation-changed':'mount-moved';
+    if(this.backgroundPaused&&(!this.latest?.reason||this.latest.reason==='sensor-gap'))return 'background';
+    return this.latest?.reason||(this.sensorStale?'sensor-gap':null);
   }
   render() {
     const {ui}=this, diagnostics=this.getDiagnostics();
@@ -168,16 +189,30 @@ export class MotionBetaController {
     setText(ui.motionBetaIndicator,!this.setupComplete?'BETA · SETUP':this.recordingReady&&recording?'BETA · REC':'BETA · REC OFF');
     ui.motionBetaIndicator.classList.toggle('recording-off',this.setupComplete&&!recording);
     ui.diagnosticsIndicator.hidden=this.enabled||!recording;
-    let message=this.message;
-    if(this.enabled&&this.recordingReady&&this.latest){
-      message=this.latest.status==='ready'?
-        `Motion feedback active · ${this.latest.confidence} confidence. Diagnostics recording locally.`:
-        this.latest.status==='calibration'?'Keep the mounted phone still for calibration.':
-        'Motion feedback paused. Check the mount and recalibrate while parked if needed.';
+    let message=this.message, feedbackReason=null;
+    if(this.enabled&&this.setupComplete&&(!this.recordingReady||!recording)){
+      if(this.recordingStart)message='Starting local diagnostics. Feedback stays neutral until recording begins.';
+      else {
+        feedbackReason=/limit|reserve|space|backlog|quota/i.test(`${this.diagnosticsStatus||''} ${this.message}`)?'recording-limit':'recording-stopped';
+        message=motionPauseDetails(feedbackReason).message;
+      }
+    }else if(this.enabled&&this.recordingReady&&this.latest){
+      if(this.latest.status==='ready'&&!this.latest.reason&&!this.sensorStale&&!this.backgroundPaused)
+        message=`Motion feedback active · ${this.latest.confidence} confidence. Diagnostics recording locally.`;
+      else if(this.latest.status==='calibration')message='Keep the mounted phone still for calibration.';
+      else {feedbackReason=this.feedbackReason()||'needs-calibration';message=motionPauseDetails(feedbackReason).message;}
+    }
+    const feedbackActive=this.latest?.status==='ready'&&!this.latest.reason&&this.recordingReady&&recording&&!this.sensorStale&&!this.backgroundPaused;
+    if(this.enabled&&this.setupComplete&&feedbackReason&&feedbackReason!==this.lastFeedbackReason){
+      this.lastFeedbackReason=feedbackReason;
+      const details=motionPauseDetails(feedbackReason);this.captureEvent('feedback-paused',{reason:feedbackReason,recovery:details.recovery});
+    }else if(this.enabled&&feedbackActive&&this.lastFeedbackReason){
+      const previousReason=this.lastFeedbackReason;this.lastFeedbackReason=null;
+      this.captureEvent('feedback-resumed',{previousReason});
     }
     if(ui.motionStatus.textContent!==message)ui.motionStatus.textContent=message;
     setText(ui.motionSummary,`Estimated events this beta session: ${this.counts.abrupt} abrupt motion, ${this.counts.bumps} vertical bumps. These are not a driving safety score.`);
-    const reliable=this.enabled&&this.recordingReady&&recording&&this.latest?.status==='ready'&&!this.sensorStale&&document.visibilityState==='visible';
+    const reliable=this.enabled&&this.recordingReady&&recording&&this.latest?.status==='ready'&&!this.latest.reason&&!this.sensorStale&&document.visibilityState==='visible';
     ui.motionBorder.hidden=!this.enabled||!ui.motionBorderToggle.checked;
     ui.motionBorder.classList.toggle('neutral',!reliable);
     if(reliable){const severity=Math.min(1,Math.max(0,this.latest.severity));ui.motionBorder.style.setProperty('--motion-hue',String(Math.round(120*(1-severity))));ui.motionBorder.style.setProperty('--motion-opacity',String(.35+.45*severity));}else ui.motionBorder.style.setProperty('--motion-opacity','.24');

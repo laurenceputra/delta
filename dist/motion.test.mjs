@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MotionSmoothness } from './motion.js';
+import { motionPauseDetails } from './motion-controller.js';
 
 const fixed = (time, acceleration = [0, 0, 0], extra = {}) => ({
   time, acceleration, gravity: [0, 0, 9.81], rotation: [0, 0, 0],
@@ -205,4 +206,29 @@ test('gravity-only mount shift pauses before false jerk and latches after a stab
   assert.equal(resumed.status, 'ready');
   assert.equal(resumed.event, null);
   assert.equal(resumed.jerkMagnitude, null);
+});
+
+
+test('pause explanations distinguish automatic recovery from a calibration latch', () => {
+  const sensor=ready();
+  const gap=sensor.update({time:4000});
+  assert.equal(gap.reason,'sensor-gap');
+  assert.equal(motionPauseDetails(gap.reason).recovery,'automatic');
+  assert.match(motionPauseDetails(gap.reason).message,/two valid readings/);
+  sensor.update(fixed(4100));
+  assert.equal(sensor.update(fixed(4200)).status,'ready');
+
+  const moved=ready();
+  moved.update(fixed(2100,[0,0,0],{rotation:[0,60,0]}));
+  assert.equal(moved.reason,'mount-moved');
+  assert.equal(motionPauseDetails(moved.reason).recovery,'recalibrate');
+  assert.match(motionPauseDetails(moved.reason).message,/Recalibrate while parked/);
+  assert.equal(moved.update({time:5000}).reason,'mount-moved','a sensor gap cannot clear a calibration latch');
+  assert.equal(moved.update(fixed(5100)).reason,'mount-moved');
+  moved.calibrate();
+  for(let time=5200;time<=7200;time+=100)moved.update(fixed(time));
+  assert.equal(moved.status,'ready');
+  assert.equal(motionPauseDetails('screen-orientation-changed').recovery,'recalibrate');
+  assert.equal(motionPauseDetails('sensor-outlier').recovery,'automatic');
+  assert.equal(motionPauseDetails('recording-limit').recovery,'restart-recording');
 });

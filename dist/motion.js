@@ -80,7 +80,7 @@ export class MotionSmoothness {
     const diagnostic = { source, rawAcceleration: roundedVector(raw),
       rotationMagnitude: rounded(rotationMagnitude), gravityAngleDeg: rounded(gravityAngleDeg) };
 
-    if (this.status === 'unavailable') return this.snapshot(diagnostic);
+    if (this.status === 'unavailable' || this.reason === 'mount-moved') return this.snapshot(diagnostic);
     if (!Number.isFinite(time)) {
       if (this.status !== 'calibration') this.pause('sensor-gap');
       return this.snapshot(diagnostic);
@@ -95,7 +95,6 @@ export class MotionSmoothness {
     if (this.status === 'calibration')
       return this.updateCalibration({ time, acceleration, includingGravity, rotationMagnitude,
         orientation, speedKmh, gpsFresh, parkedDeclaration, diagnostic });
-    if (this.reason === 'mount-moved') return this.snapshot(diagnostic);
     if (!raw) {
       this.pause('sensor-gap');
       return this.snapshot(diagnostic);

@@ -147,19 +147,20 @@ async function motionPage(browser, url, permission = 'granted') {
   return page;
 }
 
-async function samples(page, count, acceleration = { x: 0, y: 0, z: 0 }, interval = 230) {
-  await page.evaluate(async ({ count, acceleration, interval }) => {
+async function samples(page, count, acceleration = { x: 0, y: 0, z: 0 }, interval = 230,
+  rotation = { alpha: 0, beta: 0, gamma: 0 }) {
+  await page.evaluate(async ({ count, acceleration, interval, rotation }) => {
     for (let index = 0; index < count; index++) {
       const event = new Event('devicemotion');
       Object.defineProperties(event, {
         acceleration: { value: acceleration },
         accelerationIncludingGravity: { value: { x: 0, y: 0, z: 9.81 } },
-        rotationRate: { value: { alpha: 0, beta: 0, gamma: 0 } },
+        rotationRate: { value: rotation },
       });
       window.dispatchEvent(event);
       await new Promise(resolve => setTimeout(resolve, interval));
     }
-  }, { count, acceleration, interval });
+  }, { count, acceleration, interval, rotation });
 }
 
 test('motion permission denial and absent sensor do not claim live feedback or recording', { timeout: 45000 }, async () => {
@@ -243,14 +244,31 @@ test('calibration gates feedback and auto recording; motion colors and saved eve
     });
     assert.equal(await page.locator('#motionBorder').evaluate(node => node.classList.contains('neutral')), true,
       'backgrounding neutralizes motion feedback immediately');
+    await page.locator('#settingsButton').click();
+    assert.match(await page.locator('#motionStatus').textContent(),
+      /App was in the background.*resumes automatically.*visible.*sensor readings return/i);
+    await page.locator('#closeInfoButton').click();
     await page.evaluate(() => {
       delete document.visibilityState;
       document.dispatchEvent(new Event('visibilitychange'));
     });
+    await samples(page, 2);
+    await page.locator('#settingsButton').click();
+    assert.match(await page.locator('#motionStatus').textContent(), /Motion feedback active/,
+      'background reason clears after valid readings');
+    assert.doesNotMatch(await page.locator('#motionStatus').textContent(), /background|interrupted/i);
+    await page.locator('#closeInfoButton').click();
     await page.waitForTimeout(1800);
     assert.equal(await page.locator('#motionBorder').evaluate(node => node.classList.contains('neutral')), true,
       'sensor stale state must be neutral');
     await page.locator('#settingsButton').click();
+    assert.match(await page.locator('#motionStatus').textContent(),
+      /Sensor readings interrupted.*resumes automatically after two valid readings/i);
+    await page.locator('#closeInfoButton').click();
+    await samples(page, 2);
+    await page.locator('#settingsButton').click();
+    assert.match(await page.locator('#motionStatus').textContent(), /Motion feedback active/,
+      'sensor gap reason clears after two valid readings');
     await page.locator('#motionEnableButton').click();
     await page.waitForFunction(() => document.querySelector('#motionBetaIndicator').hidden &&
       document.querySelector('#diagnosticsIndicator').hidden);
@@ -272,13 +290,21 @@ test('calibration gates feedback and auto recording; motion colors and saved eve
         events.push(...text.trim().split('\n').map(line => JSON.parse(line)));
       }
       return { records: records.map(row => ({ status: row.status, eventCount: row.eventCount })),
-        types: [...new Set(events.map(event => event.type))] };
+        types: [...new Set(events.map(event => event.type))],
+        markers: events.filter(event => event.type === 'motion-event').map(event => event.motion) };
     });
     assert.equal(saved.records.length, 1);
     assert.notEqual(saved.records[0].status, 'recording');
     assert.ok(saved.records[0].eventCount > 0);
     assert.ok(saved.types.includes('motion') && saved.types.includes('motion-event'),
       `raw motion and markers must be retained locally: ${JSON.stringify(saved)}`);
+    assert.ok(saved.markers.some(marker => marker.phase === 'feedback-paused' &&
+      marker.reason === 'background' && marker.recovery === 'automatic'),
+    'background pause reason must survive the hidden-page recording policy');
+    assert.ok(saved.markers.some(marker => marker.phase === 'feedback-paused' &&
+      marker.reason === 'sensor-gap' && marker.recovery === 'automatic'));
+    assert.ok(saved.markers.some(marker => marker.phase === 'feedback-resumed' &&
+      marker.previousReason === 'sensor-gap'));
     assert.equal(uploads, 0, 'beta never uploads automatically');
     await page.close();
   } finally { await browser.close(); await new Promise(resolve => http.close(resolve)); }
@@ -318,11 +344,66 @@ test('low local storage prevents Beta feedback from claiming an active recording
       value: async () => ({ quota: 100_000_000, usage: 95_000_000 }) }));
     await page.locator('#motionEnableButton').click();
     await samples(page, 10);
-    await page.waitForFunction(() => /Diagnostics could not start/.test(document.querySelector('#motionStatus')?.textContent),
+    await page.waitForFunction(() => /Diagnostics reached a recording or storage limit/.test(document.querySelector('#motionStatus')?.textContent),
       null, { timeout: 5000 });
+    assert.match(await page.locator('#motionStatus').textContent(), /Free space if needed, then recalibrate while parked/i);
     assert.equal(await page.locator('#motionBetaIndicator').textContent(), 'BETA · REC OFF');
     assert.equal(await page.locator('#motionBorder').evaluate(node => node.classList.contains('neutral')), true);
     assert.equal(await page.locator('#diagnosticsIndicator').isVisible(), false);
+    await page.locator('#motionEnableButton').click();
+    await page.close();
+  } finally { await browser.close(); await new Promise(resolve => http.close(resolve)); }
+});
+
+test('motion pause reasons distinguish mount, orientation, outlier, and stopped diagnostics', { timeout: 60000 }, async () => {
+  const { http, url } = await preview();
+  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', args: ['--no-sandbox'] });
+  try {
+    const page = await motionPage(browser, url);
+    await page.locator('#motionEnableButton').click();
+    await samples(page, 10);
+    await page.waitForFunction(() => document.querySelector('#motionBetaIndicator')?.textContent === 'BETA · REC');
+    await samples(page, 1, { x: 0, y: 0, z: 0 }, 230,
+      { alpha: 50, beta: 0, gamma: 0 });
+    assert.match(await page.locator('#motionStatus').textContent(),
+      /Phone or mount movement detected.*Recalibrate while parked/i);
+    assert.equal(await page.locator('#motionBorder').evaluate(node => node.classList.contains('neutral')), true);
+    await page.locator('#motionCalibrateButton').click();
+    await samples(page, 10);
+    assert.match(await page.locator('#motionStatus').textContent(), /Motion feedback active/,
+      'manual recalibration clears mount movement latch');
+
+    await page.evaluate(() => Object.defineProperty(screen.orientation, 'angle',
+      { configurable: true, value: 90 }));
+    await samples(page, 1);
+    assert.match(await page.locator('#motionStatus').textContent(),
+      /Phone orientation changed.*Recalibrate while parked/i);
+    assert.equal(await page.locator('#motionBorder').evaluate(node => node.classList.contains('neutral')), true);
+    await page.locator('#motionCalibrateButton').click();
+    await samples(page, 10);
+    assert.match(await page.locator('#motionStatus').textContent(), /Motion feedback active/);
+
+    await page.evaluate(async () => {
+      const { sampleAt } = await import('./engine.js');
+      const data = await (await fetch('./data/roads.json')).json();
+      const point = sampleAt(data.roads.find(road => road.id === 'osm-way-32877553'), 70);
+      window.geoOk({ coords: { latitude: point.latitude, longitude: point.longitude,
+        accuracy: 5, heading: point.heading, speed: 15 }, timestamp: Date.now() });
+    });
+    await samples(page, 1, { x: 35, y: 0, z: 0 });
+    assert.match(await page.locator('#motionStatus').textContent(),
+      /extreme sensor reading was rejected.*resumes automatically after two clean readings/i);
+    assert.equal(await page.locator('#motionBorder').evaluate(node => node.classList.contains('neutral')), true);
+    await samples(page, 2);
+    assert.match(await page.locator('#motionStatus').textContent(), /Motion feedback active/,
+      'outlier explanation clears after clean readings');
+
+    await page.locator('#recordDiagnosticsButton').click();
+    await page.waitForFunction(() => document.querySelector('#motionBetaIndicator')?.textContent === 'BETA · REC OFF');
+    assert.match(await page.locator('#motionStatus').textContent(),
+      /Diagnostics stopped.*Recalibrate while parked/i);
+    assert.equal(await page.locator('#motionBorder').evaluate(node => node.classList.contains('neutral')), true,
+      'recording stop must not leave a false green border');
     await page.locator('#motionEnableButton').click();
     await page.close();
   } finally { await browser.close(); await new Promise(resolve => http.close(resolve)); }
