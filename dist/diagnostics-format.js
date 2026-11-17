@@ -12,8 +12,9 @@ const timestamp = x => text(x, 40) && Number.isFinite(Date.parse(x));
 const integer = x => Number.isSafeInteger(x) && x >= 0;
 
 export function validateEvent(event) {
-  if (!plain(event) || !['fix', 'error', 'state', 'signal', 'visibility', 'session'].includes(event.type) || !timestamp(event.recordedAt) || !integer(event.seq)) return false;
+  if (!plain(event) || !['fix', 'error', 'state', 'signal', 'visibility', 'session', 'motion', 'motion-event'].includes(event.type) || !timestamp(event.recordedAt) || !integer(event.seq)) return false;
   if (event.type === 'fix' && !plain(event.fix)) return false;
+  if (['motion', 'motion-event'].includes(event.type) && !plain(event.motion)) return false;
   return true;
 }
 

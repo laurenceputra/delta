@@ -83,3 +83,16 @@ test('mid-session recording marks timing comparison unavailable but still checks
   assert.ok(comparison.mismatches.includes('roadId'));
   assert.ok(!comparison.mismatches.includes('deltaSeconds'));
 });
+
+
+test('motion observations are summarised without inventing GPS fixes or driving scores', () => {
+  const samples=[
+    {type:'motion',seq:0,recordedAt:'2026-11-17T00:00:00Z',motion:{status:'ready',severity:0.7}},
+    {type:'motion-event',seq:1,recordedAt:'2026-11-17T00:00:01Z',motion:{phase:'estimated-event',kind:'vertical-bump'}},
+    {type:'motion-event',seq:2,recordedAt:'2026-11-17T00:00:02Z',motion:{phase:'sensor-paused'}}
+  ];
+  const result=replay({events:samples,legacy:true}, {roads:[road]}, {roads:[]});
+  assert.equal(result.motion.samples,1);assert.equal(result.motion.verticalBumps,1);
+  assert.equal(result.motion.peakSeverity,0.7);assert.equal(result.motion.markers.length,2);
+  assert.equal(result.observations.length,0);assert.equal(result.timeline.length,0);
+});

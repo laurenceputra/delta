@@ -169,3 +169,13 @@ test('expired rows are hidden and cleanup pages through orphan objects', async (
   assert.equal(JSON.parse(cleaned.result.content[0].text).deleted, 1);
   assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM diagnostic_recordings').get().n, 0);
 });
+
+
+test('motion diagnostics use bounded valid event envelopes', () => {
+  for (const type of ['motion', 'motion-event']) {
+    const base={type, recordedAt:new Date().toISOString(), seq:0};
+    assert.equal(validateEvent({...base,motion:{status:'ready',severity:0.5}}),true);
+    assert.equal(validateEvent(base),false);
+    assert.equal(validateEvent({...base,motion:[]}),false);
+  }
+});

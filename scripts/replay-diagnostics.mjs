@@ -85,6 +85,7 @@ export function replay({ events, manifest, legacy }, roadData, localData, option
   const originalNow = Date.now;
   const timeline = [];
   const observations = [];
+  const motion = { samples: 0, estimatedEvents: 0, verticalBumps: 0, abruptMotion: 0, peakSeverity: 0, statuses: {}, markers: [] };
   let clock = 0, previous = null, baselineIncomplete = false, baselineEntryTime = null;
   try {
     Date.now = () => clock;
@@ -92,6 +93,23 @@ export function replay({ events, manifest, legacy }, roadData, localData, option
       const at = eventTime(event);
       if (at == null) fail(`Event ${event.seq} has no usable timestamp`);
       clock = at;
+      if (event.type === 'motion') {
+        motion.samples++;
+        const status = String(event.motion?.status || 'unknown');
+        motion.statuses[status] = (motion.statuses[status] || 0) + 1;
+        const severity = event.motion?.severity;
+        if (Number.isFinite(severity)) motion.peakSeverity = Math.max(motion.peakSeverity, Math.min(1, Math.max(0, severity)));
+        continue;
+      }
+      if (event.type === 'motion-event') {
+        if (event.motion?.phase === 'estimated-event') {
+          motion.estimatedEvents++;
+          if (event.motion.kind === 'vertical-bump') motion.verticalBumps++;
+          if (event.motion.kind === 'abrupt-motion') motion.abruptMotion++;
+        }
+        if (motion.markers.length < 1000) motion.markers.push({ seq: event.seq, time: at, ...event.motion });
+        continue;
+      }
       let state;
       if (event.type === 'session' && event.action === 'recording-start') {
         baselineIncomplete = !!(event.sessionActive ?? event.state?.sessionActive ?? event.state?.entryTime);
@@ -157,7 +175,7 @@ export function replay({ events, manifest, legacy }, roadData, localData, option
     deltaDifferenceCount: timeline.filter(x => x.deltaDifference != null && Math.abs(x.deltaDifference) > 0.001).length,
     stateComparisonCount: timeline.filter(x => x.recorded).length,
     stateMismatchCount: timeline.filter(x => x.mismatches.length).length,
-    timeline, observations };
+    timeline, observations, motion };
 }
 
 export function htmlReport(report, roads) {

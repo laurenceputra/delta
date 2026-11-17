@@ -33,6 +33,14 @@ The Sites deployment remains public; the upload API and analysis tools have sepa
 - Exit projections assume the current GPS speed continues to each exit; reference time still follows every mapped or assumed speed-limit segment. Projections disappear when stopped or GPS is stale. They are estimates, not a recommended speed.
 - GPS gaps, tunnels, parallel roads and flyovers can prevent dependable tracking. This is advisory software, not a calibrated speedometer or enforcement-compliance assessment.
 
+## Drive smoothness Beta
+
+Settings offers **Enable beta for this drive**, off on each fresh page. Enable only while parked with the phone firmly mounted. A direct tap requests motion permission where required, then stationary calibration runs. Sensor absence, denial or failed calibration leaves feedback neutral/off. Fresh GPS speed above the parked threshold prevents setup; explicitly parked setup can calibrate when GPS speed is unavailable.
+
+After calibration, Beta starts local diagnostics automatically (or shares an existing manual recording without taking ownership). Raw sensor diagnostics are capped at 10 Hz within the existing 2-hour, 10 MiB compressed / 50 MiB expanded and 50 MiB total local limits. Normal 7-day local retention and explicit key-protected upload remain unchanged. Disabling Beta stops only its own recording; saved data is retained. If recording stops or reaches limits, **BETA · REC OFF** appears and feedback pauses rather than claiming full recording.
+
+The optional inset border estimates motion smoothness from filtered acceleration and jerk: green to amber/red, with gradual decay and no flashing. Gray means setup, sensor gaps, handling or unreliable data. Reduced-motion settings remove transitions. It cannot extend over the browser toolbar. The first Beta labels generic **abrupt motion** and **vertical bumps**, not braking/turning or unsafe driving: parked calibration does not establish the vehicle's forward direction. Missing GPS lowers confidence after calibration; stale motion and mount/orientation changes pause feedback. Recalibrate while parked if the mount moves. Per-session estimated event counts remain in Settings; opted-in motion markers are included in offline diagnostic replay summaries.
+
 ## Data and enforcement
 
 See `dist/data/` for source provenance, coverage and the audit. OSM data is subject to ODbL and OpenStreetMap contributor attribution. Data age and gaps matter: road signs and current restrictions remain authoritative. No API key is required at runtime.

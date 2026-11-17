@@ -179,6 +179,26 @@ body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{displ
   body:has(.drive-panel:not([hidden])) .drive-topline .eyebrow,
   body:has(.drive-panel:not([hidden])) .section-heading .eyebrow{display:none}
 }
+
+/* Opt-in mounted-phone motion beta. No dashboard geometry or pointer interception. */
+.motion-beta-section{margin:24px 0 18px;padding:18px;border:1px solid #536752;border-radius:6px;background:#18231b}
+.motion-beta-section h3{margin:5px 0 8px}
+.motion-beta-section p{margin:10px 0}
+.motion-beta-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:16px 0}
+.motion-beta-actions .secondary-button.small{width:100%;min-width:0;min-height:44px;margin:0;justify-content:center;text-align:center;line-height:1.25}
+.motion-border-control{display:flex;align-items:center;gap:10px;min-height:44px;color:#d8e6d8;font-size:13px;font-weight:700}
+.motion-border-control input{width:20px;height:20px;margin:0;accent-color:#d5fa5a;flex:none}
+#motionStatus{color:#d5e4d3;font-weight:700}
+#motionSummary{color:#abbfae}
+.motion-beta-indicator{max-width:74px;overflow:hidden;text-overflow:ellipsis;flex:none;border:1px solid #83a373;border-radius:3px;padding:2px 5px;color:#d5fa5a;font-size:9px;font-weight:800;letter-spacing:.03em;white-space:nowrap}
+.motion-border{position:fixed;inset:calc(env(safe-area-inset-top) + 5px) calc(env(safe-area-inset-right) + 5px) calc(env(safe-area-inset-bottom) + 5px) calc(env(safe-area-inset-left) + 5px);z-index:4;pointer-events:none;border:4px solid hsl(var(--motion-hue,0) 58% 65% / var(--motion-opacity,.26));border-radius:8px;box-shadow:inset 0 0 12px hsl(var(--motion-hue,0) 58% 65% / var(--motion-opacity,.26));transition:border-color .4s linear,box-shadow .4s linear}
+.motion-border.neutral{border-color:hsl(145 8% 68% / var(--motion-opacity,.24));box-shadow:inset 0 0 12px hsl(145 8% 68% / var(--motion-opacity,.24))}
+:root[data-theme="light"] .motion-beta-section{background:#eef5eb;border-color:#b2c4ae}
+:root[data-theme="light"] .motion-border-control,:root[data-theme="light"] #motionStatus{color:#29442c}
+:root[data-theme="light"] #motionSummary{color:#526c55}
+:root[data-theme="light"] .motion-beta-indicator{color:#456e1a;border-color:#709755}
+@media(max-width:380px){.motion-beta-actions{grid-template-columns:1fr}.motion-beta-indicator{font-size:8px;padding:2px 4px}}
+@media(prefers-reduced-motion:reduce){.motion-border{transition:none}}
 @media(min-width:381px) and (max-width:600px) and (min-height:750px){
   body:has(.drive-panel:not([hidden])) .speed-readout #speedValue{font-size:clamp(96px,26vw,110px)}
 }
