@@ -48,6 +48,10 @@ export class MotionSmoothness {
     this.tiltCandidate = null;
     this.stableSince = null;
     this.transition = null;
+    this.forwardAxis = null;
+    this.axisEvidence = [];
+    this.axisFix = null;
+    this.lastAxisAt = null;
     return this.snapshot();
   }
 
@@ -177,40 +181,72 @@ export class MotionSmoothness {
     this.reason = null;
     const previous = justResumed ? null : this.filtered;
     const dt = Math.max(0.02, (dtMs || 100) / 1000);
-    const alpha = 1 - Math.exp(-dt / 0.12);
+    const alpha = 1 - Math.exp(-dt / 0.32);
     this.filtered = previous ? previous.map((value, i) => value + alpha * (raw[i] - value)) : [...raw];
     this.jerk = previous && dtMs != null && dtMs <= 500 ?
       this.filtered.map((value, i) => (value - previous[i]) / dt) : null;
-    this.severity *= Math.exp(-dt / 2.4);
+    const up = this.gravityBaseline?.map(value => value / magnitude(this.gravityBaseline));
+    const vertical = up ? dot(this.filtered, up) : null;
+    const horizontal = up ? this.filtered.map((value, i) => value - vertical * up[i]) : this.filtered;
+    this.learnForwardAxis(input.gpsFix, gpsFresh, horizontal, tiltRateDegS, time, up);
+    const forward = this.forwardAxis;
+    const longitudinal = forward ? dot(horizontal, forward) : null;
+    const lateral = forward ? magnitude(horizontal.map((value, i) => value - longitudinal * forward[i])) : null;
+    Object.assign(diagnostic, { verticalMps2: rounded(vertical), longitudinalMps2: rounded(longitudinal),
+      lateralMps2: rounded(lateral), horizontalMps2: rounded(magnitude(horizontal)),
+      axisConfidence: forward ? 'estimated' : 'unknown' });
+    this.severity *= Math.exp(-dt / 0.8);
     if (this.event && time - this.event.lastAt > 450) this.event = null;
-    const accelerationMagnitude = magnitude(this.filtered);
-    const jerkMagnitude = this.jerk ? magnitude(this.jerk) : 0;
-    const active = accelerationMagnitude > 1.1 || jerkMagnitude > 3.5;
-    if (active) {
-      const intensity = clamp(Math.max((accelerationMagnitude - 0.5) / 4,
-        (jerkMagnitude - 2) / 18));
-      if (!this.candidate || time - this.candidate.lastAt > 300)
-        this.candidate = { since: time, lastAt: time, count: 1, peak: intensity };
-      else {
-        this.candidate.count++;
-        this.candidate.lastAt = time;
-        this.candidate.peak = Math.max(this.candidate.peak, intensity);
-      }
-      if (this.candidate.count >= 2 && time - this.candidate.since >= 60) {
-        const vertical = this.gravityBaseline && accelerationMagnitude > 0.9 &&
-          Math.abs(dot(this.filtered, this.gravityBaseline)) /
-            (accelerationMagnitude * magnitude(this.gravityBaseline)) >= 0.65;
-        const kind = vertical ? 'vertical-bump' : 'abrupt-motion';
-        if (this.event && time - this.event.lastAt <= 450) {
+    const horizontalMagnitude = magnitude(horizontal);
+    const kind = horizontalMagnitude > 1.5 ? longitudinal < -1.65 ? 'sharp-braking' :
+      longitudinal > 1.65 ? 'abrupt-acceleration' : lateral > 1.65 ? 'sharp-cornering' : 'abrupt-motion' :
+      up && Math.abs(dot(raw, up)) > 3.5 && Math.abs(vertical) > 0.8 ? 'vertical-bump' : null;
+    if (!kind) this.candidate = null;
+    else {
+      const bump = kind === 'vertical-bump';
+      const intensity = bump ? 0.25 : clamp((horizontalMagnitude - 1.1) / 3.5);
+      if (this.candidate?.kind !== kind) this.candidate = { kind, since: time };
+      if (time - this.candidate.since >= (bump ? 80 : 300)) {
+        if (this.event?.kind === kind) {
           this.event.lastAt = time;
-          this.event.peakSeverity = Math.max(this.event.peakSeverity, this.candidate.peak);
-          if (vertical) this.event.kind = kind;
-        } else this.event = { kind, startedAt: this.candidate.since,
-          lastAt: time, peakSeverity: this.candidate.peak };
-        this.severity = Math.max(this.severity, this.event.peakSeverity);
+          this.event.peakSeverity = Math.max(this.event.peakSeverity, intensity);
+        } else this.event = { kind, startedAt: this.candidate.since, lastAt: time, peakSeverity: intensity };
+        if (!bump) this.severity = Math.max(this.severity, intensity);
       }
-    } else this.candidate = null;
+    }
+    diagnostic.trigger = this.event?.kind ?? null;
     return this.snapshot(diagnostic);
+  }
+
+  learnForwardAxis(fix, gpsFresh, horizontal, tilt, time, up) {
+    if (this.lastAxisAt != null && time - this.lastAxisAt > 30000) {
+      this.forwardAxis = null;
+      this.axisEvidence = [];
+      this.lastAxisAt = null;
+    }
+    if (!up || !gpsFresh || !fix || ![fix.timestamp, fix.speed, fix.heading, fix.accuracy].every(Number.isFinite) ||
+        fix.accuracy > 20 || fix.timestamp === this.axisFix?.timestamp) return;
+    const previous = this.axisFix;
+    this.axisFix = fix;
+    if (this.forwardAxis) this.lastAxisAt = time;
+    if (!previous || Math.min(fix.speed, previous.speed) < 4 ||
+        Math.abs(((fix.heading - previous.heading + 540) % 360) - 180) > 8 || tilt == null || tilt > 12) return;
+    const seconds = (fix.timestamp - previous.timestamp) / 1000;
+    if (seconds < 0.5 || seconds > 2.5) return;
+    const gpsAcceleration = (fix.speed - previous.speed) / seconds;
+    const horizontalMagnitude = magnitude(horizontal);
+    if (Math.abs(gpsAcceleration) < 0.65 || horizontalMagnitude < 0.5 ||
+        Math.abs(horizontalMagnitude - Math.abs(gpsAcceleration)) > 0.8) return;
+    const candidate = horizontal.map(value => value * Math.sign(gpsAcceleration) / horizontalMagnitude);
+    this.axisEvidence = this.axisEvidence.filter(item => time - item.time < 120000);
+    this.axisEvidence.push({ time, candidate, sign: Math.sign(gpsAcceleration) });
+    if (this.axisEvidence.length > 12) this.axisEvidence.shift();
+    const agreeing = this.axisEvidence.filter(item => dot(item.candidate, candidate) > 0.9);
+    if (agreeing.length >= 4 && new Set(agreeing.map(item => item.sign)).size === 2) {
+      const estimate = agreeing.reduce((sum, item) => sum.map((value, i) => value + item.candidate[i]), [0, 0, 0]);
+      this.forwardAxis = estimate.map(value => value / magnitude(estimate));
+      this.lastAxisAt = time;
+    }
   }
 
   updateCalibration({ time, acceleration, includingGravity, gravityEstimate,
@@ -244,6 +280,10 @@ export class MotionSmoothness {
 
   enterStabilityCheck(time, diagnostic, cause) {
     this.pause('checking-stability');
+    this.forwardAxis = null;
+    this.axisEvidence = [];
+    this.axisFix = null;
+    this.lastAxisAt = null;
     this.stableSince = null;
     const durationMs = cause === 'gravity-shift' ? time - this.gravityShift.since :
       time - this.tiltCandidate;

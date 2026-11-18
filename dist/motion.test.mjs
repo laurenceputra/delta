@@ -58,7 +58,7 @@ test('stationary unknown GPS speed warms up with low or medium confidence', () =
   }
 });
 
-test('quiet noise stays neutral and a sustained vertical bump decays', () => {
+test('quiet noise and vertical bumps do not raise the live border', () => {
   const motion = ready();
   for (let time = 2100; time <= 4000; time += 100) {
     const state = motion.update(fixed(time,
@@ -71,12 +71,12 @@ test('quiet noise stays neutral and a sustained vertical bump decays', () => {
   const bump = motion.update(fixed(4200,
     { acceleration: [0, 0, 5], speedKmh: 50 }));
   assert.equal(bump.event?.kind, 'vertical-bump');
-  assert.ok(bump.severity > 0.3);
+  assert.equal(bump.severity, 0);
   let decayed;
   for (let time = 4300; time <= 7200; time += 100)
     decayed = motion.update(fixed(time, { speedKmh: 50 }));
   assert.equal(decayed.event, null);
-  assert.ok(decayed.severity < bump.severity / 2);
+  assert.equal(decayed.severity, 0);
 });
 
 test('extreme outlier pauses neutral then two clean samples resume', () => {
@@ -93,19 +93,17 @@ test('extreme outlier pauses neutral then two clean samples resume', () => {
   assert.equal(resumed.jerkMagnitude, null);
 });
 
-test('abrupt lateral motion stays generic and nearby pulses merge', () => {
+test('a single shock stays quiet and sustained lateral motion stays generic without an axis', () => {
   const motion = ready();
-  motion.update(fixed(2100, { acceleration: [4, 0, 0], speedKmh: 45 }));
-  const first = motion.update(fixed(2200,
-    { acceleration: [5, 0, 0], speedKmh: 45 }));
-  assert.equal(first.event?.kind, 'abrupt-motion');
-  motion.update(fixed(2300, { speedKmh: 45 }));
-  motion.update(fixed(2400, { acceleration: [4, 0, 0], speedKmh: 45 }));
-  const merged = motion.update(fixed(2500,
-    { acceleration: [5, 0, 0], speedKmh: 45 }));
-  assert.equal(merged.event.startedAt, first.event.startedAt);
-  assert.equal(JSON.stringify(merged).includes('braking'), false);
-  assert.equal(JSON.stringify(merged).includes('turning'), false);
+  const shock = motion.update(fixed(2100, { acceleration: [8, 0, 0], gravity: [8, 0, 9.81], speedKmh: 45 }));
+  assert.equal(shock.severity, 0);
+  for (let time = 2200; time <= 2600; time += 100) motion.update(fixed(time));
+  let sustained;
+  for (let time = 2700; time <= 3400; time += 100)
+    sustained = motion.update(fixed(time, { acceleration: [4, 0, 0], gravity: [4, 0, 9.81], speedKmh: 45 }));
+  assert.equal(sustained.event?.kind, 'abrupt-motion');
+  assert.ok(sustained.severity > 0.4);
+  assert.equal(sustained.diagnostic.axisConfidence, 'unknown');
 });
 
 test('gyro yaw around gravity does not imply handling', () => {
@@ -195,4 +193,25 @@ test('gaps pause; GPS loss lowers confidence without stopping motion', () => {
   assert.equal(motion.update(fixed(3000)).status, 'ready');
   assert.equal(motion.update(fixed(3100,
     { acceleration: null, gravity: null })).status, 'paused');
+});
+
+test('straight acceleration and braking establish an axis which expires without GPS', () => {
+  const motion = ready();
+  let speed = 12;
+  let fix = { timestamp: 2000, speed, accuracy: 5, heading: 90 };
+  let result;
+  for (let time = 2100; time <= 8000; time += 100) {
+    const acceleration = time <= 5000 ? 2 : -2;
+    if (time % 1000 === 0) {
+      speed += acceleration;
+      fix = { ...fix, timestamp: time, speed };
+    }
+    result = motion.update(fixed(time, { acceleration: [acceleration, 0, 0],
+      gravity: [acceleration, 0, 9.81], gpsFix: fix, speedKmh: speed * 3.6 }));
+  }
+  assert.equal(result.diagnostic.axisConfidence, 'estimated');
+  assert.equal(result.event?.kind, 'sharp-braking');
+  for (let time = 8100; time <= 38100; time += 100)
+    result = motion.update(fixed(time, { gpsFresh: false }));
+  assert.equal(result.diagnostic.axisConfidence, 'unknown');
 });

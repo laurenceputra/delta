@@ -21,7 +21,7 @@ export class MotionBetaController {
     Object.assign(this,{ui,getContext,getDiagnostics,onRecordingStart});
     this.model=new MotionSmoothness();this.enabled=false;this.busy=false;this.generation=0;
     this.setupComplete=false;this.recordingReady=false;this.ownedRecordingId=null;
-    this.counts={abrupt:0,bumps:0};this.latest=null;this.message='Off. Enable while parked for this drive.';
+    this.counts={abrupt:0,bumps:0,braking:0};this.latest=null;this.message='Off. Enable while parked for this drive.';
     this.onMotion=this.onMotion.bind(this);this.onVisibility=this.onVisibility.bind(this);
   }
   init() {
@@ -35,7 +35,7 @@ export class MotionBetaController {
     document.addEventListener('visibilitychange',this.onVisibility);
     this.render();
   }
-  configuration(){return {enabled:this.enabled,border:this.ui.motionBorderToggle.checked,sampleHz:10,labels:['abrupt-motion','vertical-bump'],vehicleAxesEstablished:false};}
+  configuration(){return {enabled:this.enabled,border:this.ui.motionBorderToggle.checked,sampleHz:10,labels:['abrupt-motion','vertical-bump'],vehicleAxis:'gps-assisted'};}
   parkedSetupAllowed() {
     const context=this.getContext();
     if(!context.parked||context.mode!=='live')throw new Error('Start a live session and set up Beta while parked.');
@@ -54,7 +54,7 @@ export class MotionBetaController {
       if(token!==this.generation||document.visibilityState!=='visible')return;
       this.parkedSetupAllowed();
       this.enabled=true;this.setupComplete=false;this.recordingReady=false;this.recordingAttempted=false;this.ownedRecordingId=null;
-      this.counts={abrupt:0,bumps:0};this.lastEventKey=null;this.latest=null;
+      this.counts={abrupt:0,bumps:0,braking:0};this.lastEventKey=null;this.latest=null;
       this.lastSensorAt=performance.now();this.lastDiagnosticAt=-Infinity;this.lastPaintAt=-Infinity;this.lastTransitionKey=null;this.pendingFirstSample=null;
       this.sensorStale=false;this.receivedSensor=false;this.backgroundPaused=false;this.lastFeedbackReason=null;this.model.calibrate();
       this.message='Learning sensor orientation. Keep the phone mounted; diagnostics start with the first valid sensor reading.';
@@ -135,7 +135,10 @@ export class MotionBetaController {
         includingGravity:compact(sample.gravity),rotation:compact(sample.rotation),screenAngle:sample.screenAngle,
         filtered:compact(this.latest.filteredAcceleration),jerk:compact(this.latest.jerk),
         severity:Math.round(this.latest.severity*1000)/1000,status:this.latest.status,reason:this.feedbackReason(),confidence:this.latest.confidence,
-        tiltRateDegS:this.latest.diagnostic?.tiltRateDegS??null,transition:newTransition?transition:null};
+        tiltRateDegS:this.latest.diagnostic?.tiltRateDegS??null,transition:newTransition?transition:null,
+        horizontalMps2:this.latest.diagnostic?.horizontalMps2, verticalMps2:this.latest.diagnostic?.verticalMps2,
+        longitudinalMps2:this.latest.diagnostic?.longitudinalMps2, lateralMps2:this.latest.diagnostic?.lateralMps2,
+        axisConfidence:this.latest.diagnostic?.axisConfidence, trigger:this.latest.diagnostic?.trigger};
     if(!this.getDiagnostics()?.active&&!this.pendingFirstSample)this.pendingFirstSample=motion;
     if(this.getDiagnostics()?.active&&(newTransition||time-this.lastDiagnosticAt>=100)){
       this.lastDiagnosticAt=time;
@@ -146,7 +149,7 @@ export class MotionBetaController {
       const key=String(detected.startedAt);
       if(this.lastEventKey!==key){
         this.lastEventKey=key;
-        if(detected.kind==='vertical-bump')this.counts.bumps++;else this.counts.abrupt++;
+        if(detected.kind==='vertical-bump')this.counts.bumps++;else if(detected.kind==='sharp-braking')this.counts.braking++;else this.counts.abrupt++;
         this.captureEvent('estimated-event',{kind:detected.kind,atMs:detected.startedAt,peakSeverity:detected.peakSeverity});
       }
     }
@@ -215,7 +218,7 @@ export class MotionBetaController {
       this.captureEvent('feedback-resumed',{previousReason});
     }
     if(ui.motionStatus.textContent!==message)ui.motionStatus.textContent=message;
-    setText(ui.motionSummary,`Estimated events this beta session: ${this.counts.abrupt} abrupt motion, ${this.counts.bumps} vertical bumps. These are not a driving safety score.`);
+    setText(ui.motionSummary,`Estimated events this beta session: ${this.counts.abrupt} abrupt motion, ${this.counts.bumps} vertical bumps.${!this.enabled && this.counts.braking ? ` ${this.counts.braking} estimated sharp braking events.` : ''} These are not a driving safety score.`);
     const reliable=this.enabled&&this.setupComplete&&this.recordingReady&&recording&&this.latest?.status==='ready'&&!this.latest.reason&&!this.sensorStale&&document.visibilityState==='visible';
     ui.motionBorder.hidden=!this.enabled||!ui.motionBorderToggle.checked;
     ui.motionBorder.classList.toggle('neutral',!reliable);

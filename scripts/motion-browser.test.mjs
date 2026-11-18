@@ -236,7 +236,7 @@ test('calibration gates feedback and auto recording; motion colors and saved eve
       window.geoOk({ coords: { latitude: point.latitude, longitude: point.longitude,
         accuracy: 5, heading: point.heading, speed: 15 }, timestamp: Date.now() });
     });
-    await samples(page, 4, { x: 8, y: 0, z: 0 }, 110);
+    await samples(page, 6, { x: 8, y: 0, z: 0 }, 110, undefined, { x: 8, y: 0, z: 9.81 });
     const abrupt = await page.locator('#motionBorder').evaluate(node => ({
       hue: Number(node.style.getPropertyValue('--motion-hue')),
       opacity: Number(node.style.getPropertyValue('--motion-opacity')) }));

@@ -1380,3 +1380,17 @@ test('unresolved fork candidate can later recover on a unique true road', () => 
   assert.equal(recovered.entryTime, base);
   assert.ok(Math.abs(recovered.deltaSeconds - (102 - 150 / (90 / 3.6))) < .05);
 });
+
+test('SLE westbound exit forecasts use the same mainline route as their distances', () => {
+  const tracker = new Tracker({ ...bundle, localRoads: local.roads });
+  const road = byId.get('osm-way-720094145');
+  const exits = tracker.upcomingExits(road, 0);
+  assert.deepEqual(exits.map(row => row.exit.name), [
+    'Upper Thomson Road', 'Mandai Road;Zoo', 'Woodlands Avenue 12'
+  ]);
+  for (const { path, atM, distanceM } of exits) {
+    assert.ok(path, 'each displayed exit has an unambiguous mainline path');
+    assert.ok(tracker.gapReference(path, 0, atM) > 0);
+    assert.ok(Math.abs(tracker.pathTravel(path, 0, atM) - distanceM) < 1);
+  }
+});

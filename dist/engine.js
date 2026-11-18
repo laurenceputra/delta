@@ -788,22 +788,31 @@ export class Tracker {
     const result = [];
     const seenExits = new Set();
     const visited = new Set();
-    let current = road, base = -alongM;
+    let current = road, base = 0, entry = alongM;
+    const path = [];
+    let unambiguous = true;
     while (current && !visited.has(current.id) && result.length < 3) {
       visited.add(current.id);
+      path.push(current);
       for (const exit of roadExits(current)) {
-        const distance = base + exit.atM;
+        const distance = base + exit.atM - entry;
         const key = exit.id || `${exit.ref || ''}:${exit.name || ''}:${Math.round(distance / 20)}`;
         if (distance > 1 && !seenExits.has(key)) {
-          result.push({ exit, distanceM: distance, road: current, atM: exit.atM });
+          result.push({ exit, distanceM: distance, road: current, atM: exit.atM, path: unambiguous ? [...path] : null });
           seenExits.add(key);
         }
       }
       result.sort((a, b) => a.distanceM - b.distanceM);
       if (result.length >= 3) break;
-      base += current.lengthM || roadLengthM(current);
+      base += (current.lengthM || roadLengthM(current)) - entry;
       const choices = this.successors(current);
-      current = choices[0] || null;
+      const mainline = choices.filter(next => this.isMainline(next) && next.ref === road.ref);
+      const next = mainline[0] || choices[0];
+      if (!next) break;
+      if (mainline.length > 1 || !mainline.length && choices.length > 1) unambiguous = false;
+      entry = this.pathEntryAt([...path, next], path.length, alongM);
+      if (!Number.isFinite(entry)) break;
+      current = next;
     }
     return result.slice(0, 3);
   }
@@ -1494,15 +1503,14 @@ export class Tracker {
     const confidence = inTunnel || accuracy > 40 || match.distanceM > 35 ? 'low' :
       accuracy > 20 || match.distanceM > 18 || !headingUseful ? 'medium' : 'high';
     const deltaSeconds = this.deltaValid && limitKmh ? this.elapsedSeconds - this.referenceSeconds : null;
-    const exits = this.upcomingExits(road, match.alongM).map(({ exit: e, distanceM: distance, road: exitRoad, atM }) => {
-        const path = road.id === exitRoad.id ? [road] : this.gapPath(road, exitRoad);
+    const exits = this.upcomingExits(road, match.alongM).map(({ exit: e, distanceM: distance, atM, path }) => {
         const reference = path ? this.gapReference(path, match.alongM, atM) : null;
         const referenceAssumed = path ? this.pathAssumed(path, match.alongM, atM) : null;
         const forecastSeconds = path && Number.isFinite(speedMps) && speedMps > 1 ? distance / speedMps : null;
         const projectedDeltaSeconds = deltaSeconds != null && forecastSeconds != null && reference != null ?
           deltaSeconds + forecastSeconds - reference : null;
         return { name: e.name || e.label || 'Unnamed exit', number: e.number ?? null,
-          distanceM: distance, projectedDeltaSeconds, forecast: true, referenceAssumed };
+          distanceM: distance, projectedDeltaSeconds, forecast: true, referenceAssumed, routeUncertain: reference == null };
       });
     this.state = {
       status: 'tracking', reason: inTunnel ? 'Tunnel: GPS confidence reduced' : null,
