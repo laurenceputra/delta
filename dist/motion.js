@@ -30,15 +30,21 @@ const tiltRate = (rotation, gravity) => {
 
 const SPILL_THRESHOLDS_G = [0.10, 0.8 / 3, 1 / 3];
 
+const SPILL_HOLD_MS = [300, 200, 150];
+
 export class SpillRisk {
   reset() {
     this.since = SPILL_THRESHOLDS_G.map(() => null);
+    this.level = 0;
+    this.belowSince = null;
+    this.unevenUntil = null;
     this.lastTime = null;
   }
 
   constructor() { this.reset(); }
 
   update(time, horizontalMps2) {
+    if (!Number.isFinite(horizontalMps2)) { this.reset(); return 0; }
     if (this.lastTime != null && time - this.lastTime > 250) this.reset();
     this.lastTime = time;
     let level = 0;
@@ -46,10 +52,25 @@ export class SpillRisk {
       if (!(horizontalMps2 / 9.80665 >= threshold)) this.since[index] = null;
       else {
         this.since[index] ??= time;
-        if (time - this.since[index] >= 300) level = index + 1;
+        if (time - this.since[index] >= SPILL_HOLD_MS[index]) level = index + 1;
       }
     }
-    return level;
+    if (level >= 2) this.unevenUntil = time + 5000;
+    if (level >= this.level) {
+      this.level = level;
+      this.belowSince = null;
+    } else {
+      if (horizontalMps2 / 9.80665 >= SPILL_THRESHOLDS_G[this.level - 1]) {
+        this.belowSince = null;
+        return this.level;
+      }
+      this.belowSince ??= time;
+      if (time - this.belowSince >= 250) {
+        this.level = level;
+        this.belowSince = null;
+      }
+    }
+    return this.level;
   }
 }
 
@@ -91,6 +112,7 @@ export class MotionSmoothness {
 
   snapshot(extra = {}) {
     return { status: this.status, reason: this.reason, spillLevel: this.spillLevel,
+      unevenUntil: this.spillRisk.unevenUntil,
       severity: this.status === 'ready' ? rounded(this.severity) : 0,
       confidence: this.status === 'ready' ? this.confidence : 'none',
       filteredAcceleration: this.status === 'ready' ? roundedVector(this.filtered) : null,

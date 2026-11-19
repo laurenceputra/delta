@@ -191,8 +191,8 @@ body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{displ
 #motionStatus{color:#d5e4d3;font-weight:700}
 #motionSummary{color:#abbfae}
 
-.motion-border{position:fixed;inset:calc(env(safe-area-inset-top) + 5px) calc(env(safe-area-inset-right) + 5px) calc(env(safe-area-inset-bottom) + 5px) calc(env(safe-area-inset-left) + 5px);z-index:4;pointer-events:none;border:4px solid hsl(var(--motion-hue,0) 58% 65% / var(--motion-opacity,.26));border-radius:8px;box-shadow:inset 0 0 12px hsl(var(--motion-hue,0) 58% 65% / var(--motion-opacity,.26));transition:border-color .4s linear,box-shadow .4s linear}
-.motion-border.neutral{border-color:hsl(145 8% 68% / var(--motion-opacity,.24));box-shadow:inset 0 0 12px hsl(145 8% 68% / var(--motion-opacity,.24))}
+.motion-border{position:fixed;inset:calc(env(safe-area-inset-top) + 5px) calc(env(safe-area-inset-right) + 5px) calc(env(safe-area-inset-bottom) + 5px) calc(env(safe-area-inset-left) + 5px);z-index:4;pointer-events:none;border:4px solid hsl(var(--motion-hue,0) 58% 65% / var(--motion-opacity,.26));border-radius:8px;box-shadow:inset 0 0 12px hsl(var(--motion-hue,0) 58% 65% / var(--motion-opacity,.26));transition:border-color var(--motion-duration,120ms) linear,box-shadow var(--motion-duration,120ms) linear}
+.motion-border.neutral{transition:none;border-color:hsl(145 8% 68% / var(--motion-opacity,.24));box-shadow:inset 0 0 12px hsl(145 8% 68% / var(--motion-opacity,.24))}
 :root[data-theme="light"] .smooth-driving-section{background:#eef5eb;border-color:#b2c4ae}
 :root[data-theme="light"] .motion-border-control,:root[data-theme="light"] #motionStatus{color:#29442c}
 :root[data-theme="light"] #motionSummary{color:#526c55}
@@ -309,3 +309,10 @@ body:has(.drive-panel:not([hidden])) .road-heading.transition-heading span{displ
   :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) .delta-card .card-top{flex-direction:column;align-items:flex-start;gap:2px}
   :root[data-dashboard-view="pace"] body:has(.drive-panel:not([hidden])) #deltaLabel{font-size:8px;letter-spacing:0;line-height:1.1;text-align:left;white-space:nowrap}
 }
+
+
+.status-detail{display:flex;align-items:baseline;gap:8px;min-width:0}
+.status-detail #signalSupport{flex:1;min-width:0}
+#unevenMotion{flex:0 0 94px;font-size:13px;font-weight:800;white-space:nowrap;color:#ffd166;visibility:hidden}
+#unevenMotion.visible{visibility:visible}
+:root[data-theme="light"] #unevenMotion{color:#794a00}

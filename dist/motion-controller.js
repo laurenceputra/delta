@@ -148,6 +148,7 @@ export class SmoothDrivingController {
   captureEvent(phase,extra={}){this.getDiagnostics()?.capture('motion-event',{motion:{phase,...extra,counts:{...this.counts}}});}
   checkSensors() {
     if(!this.enabled)return;
+    if (this.ui.unevenMotion.textContent && this.latest?.unevenUntil <= performance.now()) this.render();
     const age=performance.now()-this.lastSensorAt;
     if(!this.receivedSensor&&age>8000){void this.disable('No sensor readings arrived. Check browser permissions and try again while parked.');return;}
     if(this.receivedSensor&&age>1500&&!this.sensorStale){
@@ -203,11 +204,23 @@ export class SmoothDrivingController {
     const reliable = feedbackActive && !!this.model.gravityBaseline && document.visibilityState === 'visible';
     ui.motionBorder.hidden=!this.enabled||!ui.motionBorderToggle.checked;
     ui.motionBorder.classList.toggle('neutral',!reliable);
+    const label = ui.unevenMotion;
+    const showUneven = reliable && this.latest.unevenUntil > performance.now();
+    label.classList.toggle('visible', showUneven);
+    setText(label, showUneven ? 'Uneven motion' : '');
     if (reliable) {
+      const level = this.latest.spillLevel;
+      if (level !== this.paintedLevel) {
+        ui.motionBorder.style.setProperty('--motion-duration', level > (this.paintedLevel ?? 0) ? '120ms' : '1s');
+        this.paintedLevel = level;
+      }
       const colours = [[120,.35],[60,.5],[40,.65],[0,.8]];
       const [hue, opacity] = colours[this.latest.spillLevel];
       ui.motionBorder.style.setProperty('--motion-hue', String(hue));
       ui.motionBorder.style.setProperty('--motion-opacity', String(opacity));
-    } else ui.motionBorder.style.setProperty('--motion-opacity','.24');
+    } else {
+      this.paintedLevel = null;
+      ui.motionBorder.style.setProperty('--motion-opacity','.24');
+    }
   }
 }

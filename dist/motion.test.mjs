@@ -216,10 +216,17 @@ test('straight acceleration and braking establish an axis which expires without 
   assert.equal(result.diagnostic.axisConfidence, 'unknown');
 });
 
-test('spill colour requires 300 ms at each threshold and clears after a gap', () => {
+test('spill colour escalates quickly, holds before fading and resets after a gap', () => {
   const model = new SpillRisk();
-  const levels = [[0,.12,0],[100,.28,0],[200,.28,0],[300,.29,1],[400,.29,2],
-    [500,.38,2],[600,.38,2],[700,.38,2],[800,.38,3],[900,.29,2],[1200,.38,0]];
+  const levels = [[0,.12,0],[100,.28,0],[200,.28,0],[300,.29,2],
+    [400,.38,2],[500,.38,2],[550,.38,3],[600,.29,3],[750,.29,3],[850,.29,2],[1200,.38,0]];
   for (const [time, force, expected] of levels)
     assert.equal(model.update(time, force * 9.80665), expected, `spill level at ${time} ms`);
+  assert.equal(model.unevenUntil, null);
+  for (const time of [1300,1450,1600]) model.update(time, .38 * 9.80665);
+  assert.equal(model.unevenUntil, 6600);
+  model.update(1700, 0);
+  assert.equal(model.unevenUntil, 6600);
+  model.update(1800, null);
+  assert.equal(model.unevenUntil, null);
 });

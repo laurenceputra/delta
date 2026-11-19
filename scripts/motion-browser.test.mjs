@@ -92,8 +92,16 @@ test('Smooth Driving defaults on, uses parked permission and works without recor
     await samples(page, 23, undefined, 150);
     assert.equal(await border.evaluate(node => node.classList.contains('neutral')), false);
     assert.equal(await page.locator('#diagnosticsIndicator').isVisible(), false);
+    const panelTop = await page.locator('#drivePanel').evaluate(node => node.getBoundingClientRect().top);
     await samples(page, 12, {x:4,y:0,z:0}, 140, undefined, {x:4,y:0,z:9.81});
     assert.equal(await border.evaluate(node => node.style.getPropertyValue('--motion-hue')), '0');
+    assert.equal(await page.locator('#unevenMotion').textContent(), 'Uneven motion');
+    assert.equal(await page.locator('#drivePanel').evaluate(node => node.getBoundingClientRect().top), panelTop);
+    await samples(page, 17, undefined, 120);
+    assert.equal(await border.evaluate(node => node.style.getPropertyValue('--motion-duration')), '1s');
+    assert.equal(await page.locator('#unevenMotion').textContent(), 'Uneven motion');
+    await samples(page, 36, undefined, 120);
+    assert.equal(await page.locator('#unevenMotion').textContent(), '');
     await page.locator('#recordDiagnosticsButton').click();
     await page.getByRole('button', {name:'Stop recording'}).waitFor();
     await page.locator('#recordDiagnosticsButton').click();
