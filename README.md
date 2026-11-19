@@ -33,13 +33,11 @@ The Sites deployment remains public; the upload API and analysis tools have sepa
 - Exit projections assume the current GPS speed continues to each exit; reference time still follows every mapped or assumed speed-limit segment. Projections disappear when stopped or GPS is stale. They are estimates, not a recommended speed.
 - GPS gaps, tunnels, parallel roads and flyovers can prevent dependable tracking. This is advisory software, not a calibrated speedometer or enforcement-compliance assessment.
 
-## Drive smoothness Beta
+## Smooth Driving
 
-Settings offers **Enable beta for this drive**, off on each fresh page. Enable while parked with the phone firmly mounted. A direct tap requests motion permission where required. A three-second rolling warm-up learns sensor orientation and can finish while moving; individual bumps do not restart it. Missing or denied sensors leave feedback neutral/off.
+The border is on by default. Use **Show Smooth Driving border** in Settings to switch it off on this device. Motion access may require permission during parked setup. The border stays neutral while the phone learns its mounted orientation or checks sensor stability.
 
-Beta starts local diagnostics on the first valid sensor sample, including warm-up (or shares an existing manual recording without taking ownership). Routine raw samples are capped at 10 Hz; state transitions also retain their exact triggering sample and rule evidence. The existing two-hour, 10 MiB compressed / 50 MiB expanded recording limits, 50 MiB local budget and seven-day local retention remain. Disabling Beta stops only its own recording. **BETA · REC OFF** pauses feedback if recording stops or reaches a limit.
-
-The optional inset border estimates motion smoothness from filtered acceleration and jerk: green to amber/red, with gradual decay and no flashing. Gray indicates learning, sensor gaps or stability checks. Reduced-motion settings remove transitions. Vehicle yaw is excluded from mount-tilt checks. Brief disturbances recover automatically after a stable second; a sustained changed mount pose requires **Restart setup while parked**. Screen rotation alone does not permanently invalidate the learned pose. The Beta labels generic abrupt motion and vertical bumps, not braking, turning or unsafe driving, and does not establish a vehicle forward axis. Missing GPS lowers confidence without stopping valid motion sensing.
+The colour estimates how close water in a nearly full reference cup would get to spilling. Filtered horizontal force must stay above each threshold for 300 ms. Yellow begins at 0.10 g, amber at about 0.267 g, and red at about 0.333 g. Vertical bumps are counted separately. Diagnostics are opt-in and include motion samples when Smooth Driving is active.
 
 Uploads pack the small, crash-safe local chunks into groups capped at **1 MiB compressed and 8 MiB expanded**, with two concurrent requests, bounded timeouts/retries, verified-byte progress and checksum-based resume. Original local chunks remain until completed server verification. Packing metadata is retained without storing a second payload copy; the upload key is never saved. Analyst reads page events and compressed bytes to keep responses bounded.
 

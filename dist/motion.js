@@ -28,10 +28,37 @@ const tiltRate = (rotation, gravity) => {
   return Math.sqrt(Math.max(0, magnitude(cartesian) ** 2 - alongGravity ** 2));
 };
 
+const SPILL_THRESHOLDS_G = [0.10, 0.8 / 3, 1 / 3];
+
+export class SpillRisk {
+  reset() {
+    this.since = SPILL_THRESHOLDS_G.map(() => null);
+    this.lastTime = null;
+  }
+
+  constructor() { this.reset(); }
+
+  update(time, horizontalMps2) {
+    if (this.lastTime != null && time - this.lastTime > 250) this.reset();
+    this.lastTime = time;
+    let level = 0;
+    for (const [index, threshold] of SPILL_THRESHOLDS_G.entries()) {
+      if (!(horizontalMps2 / 9.80665 >= threshold)) this.since[index] = null;
+      else {
+        this.since[index] ??= time;
+        if (time - this.since[index] >= 300) level = index + 1;
+      }
+    }
+    return level;
+  }
+}
+
 export class MotionSmoothness {
   constructor() { this.reset(); }
 
   reset() {
+    this.spillRisk = new SpillRisk();
+    this.spillLevel = 0;
     this.status = 'unavailable';
     this.reason = 'needs-calibration';
     this.gravityBaseline = null;
@@ -63,7 +90,7 @@ export class MotionSmoothness {
   }
 
   snapshot(extra = {}) {
-    return { status: this.status, reason: this.reason,
+    return { status: this.status, reason: this.reason, spillLevel: this.spillLevel,
       severity: this.status === 'ready' ? rounded(this.severity) : 0,
       confidence: this.status === 'ready' ? this.confidence : 'none',
       filteredAcceleration: this.status === 'ready' ? roundedVector(this.filtered) : null,
@@ -198,6 +225,7 @@ export class MotionSmoothness {
     this.severity *= Math.exp(-dt / 0.8);
     if (this.event && time - this.event.lastAt > 450) this.event = null;
     const horizontalMagnitude = magnitude(horizontal);
+    this.spillLevel = this.spillRisk.update(time, up ? horizontalMagnitude : null);
     const kind = horizontalMagnitude > 1.5 ? longitudinal < -1.65 ? 'sharp-braking' :
       longitudinal > 1.65 ? 'abrupt-acceleration' : lateral > 1.65 ? 'sharp-cornering' : 'abrupt-motion' :
       up && Math.abs(dot(raw, up)) > 3.5 && Math.abs(vertical) > 0.8 ? 'vertical-bump' : null;
@@ -293,6 +321,8 @@ export class MotionSmoothness {
   }
 
   pause(reason) {
+    this.spillRisk.reset();
+    this.spillLevel = 0;
     this.status = 'paused';
     this.reason = reason;
     this.filtered = null;
